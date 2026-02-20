@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh repo view:*)",
+      "Bash(gh api:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:discuss.kakoune.com)",
+      "WebFetch(domain:sw.kovidgoyal.net)",
+      "WebFetch(domain:igor-ramazanov.github.io)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:lib.rs)",
+      "WebFetch(domain:ghostty.org)",
+      "WebFetch(domain:man.archlinux.org)",
+      "WebFetch(domain:wiki.archlinux.org)",
+      "WebFetch(domain:gist.github.com)",
+      "Bash(kak -version:*)",
+      "Bash(kitty --version:*)",
+      "Bash(cargo --version:*)",
+      "mcp__context7__resolve-library-id",
+      "Bash(kak -l:*)",
+      "Bash(kak:*)",
+      "Bash(git init:*)",
+      "Bash(cargo init:*)",
+      "Bash(git add:*)",
+      "Bash(nix-shell:*)",
+      "Bash(nix build)"
+    ]
+  }
+}
