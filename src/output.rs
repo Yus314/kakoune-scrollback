@@ -129,7 +129,7 @@ pub fn write_init_kak(
         line = screen.cursor.line,
         col = screen.cursor.col,
     )?;
-    writeln!(script, "execute-keys vt")?;
+    writeln!(script, "execute-keys vb")?;
     writeln!(script)?;
 
     // Enable keymaps
@@ -248,7 +248,7 @@ mod tests {
         assert!(content.contains("scrollback_kitty_window_id '42'"));
         assert!(content.contains("readonly true"));
         assert!(content.contains("select 5.3,5.3"));
-        assert!(content.contains("execute-keys vt"));
+        assert!(content.contains("execute-keys vb"));
         assert!(content.contains("kakoune-scrollback-setup-keymaps"));
         assert!(content.contains("ClientClose"));
         assert!(content.contains("rm -rf"));
