@@ -63,7 +63,7 @@ map ctrl+shift+g launch --type=overlay \
 | `<ret>` | Paste selection into Kitty |
 | `!` | Paste and execute selection in Kitty |
 | `e` | Open compose window |
-| `g?` | Show help |
+| `?` | Show help |
 
 ### Compose window
 

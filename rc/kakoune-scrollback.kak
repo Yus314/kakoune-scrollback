@@ -20,7 +20,7 @@ define-command -hidden kakoune-scrollback-setup-keymaps %{
     map buffer normal <ret> ':kakoune-scrollback-paste<ret>'
     map buffer normal !     ':kakoune-scrollback-execute<ret>'
     map buffer normal e     ':kakoune-scrollback-edit<ret>'
-    map buffer normal g?    ':kakoune-scrollback-help<ret>'
+    map buffer normal ?     ':kakoune-scrollback-help<ret>'
 }
 
 # --- Core commands ---
@@ -69,7 +69,8 @@ y      : yank selection to clipboard (OSC 52)
 e      : open paste window
          <a-s>   : submit (paste)
          <a-ret> : submit and execute
-         <esc>   : cancel'
+         <esc>   : cancel
+?      : show this help'
 }
 
 # --- Paste window ---
