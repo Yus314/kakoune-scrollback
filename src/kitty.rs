@@ -48,10 +48,10 @@ pub fn parse_pipe_data() -> Result<KittyPipeData> {
     parse_pipe_data_str(&val)
 }
 
-/// Get KITTY_WINDOW_ID environment variable
+/// Get the target window ID (the original shell window, not the overlay)
 pub fn window_id() -> Result<String> {
-    std::env::var("KITTY_WINDOW_ID")
-        .context("KITTY_WINDOW_ID environment variable not set")
+    std::env::var("KAKOUNE_SCROLLBACK_TARGET_WINDOW_ID")
+        .context("KAKOUNE_SCROLLBACK_TARGET_WINDOW_ID not set (update your kitty.conf — see README)")
 }
 
 #[cfg(test)]
