@@ -48,10 +48,13 @@ pub fn parse_pipe_data() -> Result<KittyPipeData> {
     parse_pipe_data_str(&val)
 }
 
-/// Get the target window ID (the original shell window, not the overlay)
+/// Get the target window ID from the first CLI argument.
+/// Kitty expands `@active-kitty-window-id` in positional args (but not in --env values),
+/// so the caller must pass it as: `kakoune-scrollback @active-kitty-window-id`
 pub fn window_id() -> Result<String> {
-    std::env::var("KAKOUNE_SCROLLBACK_TARGET_WINDOW_ID")
-        .context("KAKOUNE_SCROLLBACK_TARGET_WINDOW_ID not set (update your kitty.conf — see README)")
+    std::env::args()
+        .nth(1)
+        .context("missing target window ID argument (update your kitty.conf — see README)")
 }
 
 #[cfg(test)]

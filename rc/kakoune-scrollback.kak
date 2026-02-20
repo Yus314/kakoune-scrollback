@@ -140,15 +140,13 @@ allow_remote_control yes
 listen_on unix:/tmp/kitty
 
 map ctrl+shift+h launch --type=overlay \
-    --env KAKOUNE_SCROLLBACK_TARGET_WINDOW_ID=$KITTY_WINDOW_ID \
     --stdin-source=@screen_scrollback \
     --stdin-add-formatting \
     --stdin-add-line-wrap-markers \
-    kakoune-scrollback
+    kakoune-scrollback @active-kitty-window-id
 
 map ctrl+shift+g launch --type=overlay \
-    --env KAKOUNE_SCROLLBACK_TARGET_WINDOW_ID=$KITTY_WINDOW_ID \
     --stdin-source=@last_cmd_output \
     --stdin-add-formatting \
-    kakoune-scrollback'
+    kakoune-scrollback @active-kitty-window-id'
 }
