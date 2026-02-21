@@ -48,13 +48,22 @@ pub fn parse_pipe_data() -> Result<KittyPipeData> {
     parse_pipe_data_str(&val)
 }
 
-/// Get the target window ID from the first CLI argument.
-/// Kitty expands `@active-kitty-window-id` in positional args (but not in --env values),
-/// so the caller must pass it as: `kakoune-scrollback @active-kitty-window-id`
+/// Pure function: validate and parse a kitty window ID string (separated for testability)
+pub fn parse_window_id(s: &str) -> Result<String> {
+    let id: u32 = s.parse()
+        .with_context(|| format!("invalid kitty window ID '{s}' — expected a number (check your kitty.conf)"))?;
+    if id == 0 {
+        bail!("invalid kitty window ID '0' — window IDs start at 1");
+    }
+    Ok(id.to_string())
+}
+
+/// Read the target window ID from the first CLI argument and delegate to parse_window_id
 pub fn window_id() -> Result<String> {
-    std::env::args()
+    let val = std::env::args()
         .nth(1)
-        .context("missing target window ID argument (update your kitty.conf — see README)")
+        .context("missing target window ID argument (update your kitty.conf — see README)")?;
+    parse_window_id(&val)
 }
 
 #[cfg(test)]
@@ -100,5 +109,41 @@ mod tests {
     #[test]
     fn parse_pipe_data_non_numeric() {
         assert!(parse_pipe_data_str("abc,0:0:24,80").is_err());
+    }
+
+    #[test]
+    fn parse_window_id_valid() {
+        assert_eq!(parse_window_id("42").unwrap(), "42");
+        assert_eq!(parse_window_id("1").unwrap(), "1");
+    }
+
+    #[test]
+    fn parse_window_id_normalizes() {
+        assert_eq!(parse_window_id("042").unwrap(), "42");
+    }
+
+    #[test]
+    fn parse_window_id_rejects_zero() {
+        assert!(parse_window_id("0").is_err());
+    }
+
+    #[test]
+    fn parse_window_id_rejects_unexpanded_env_var() {
+        assert!(parse_window_id("$KITTY_WINDOW_ID").is_err());
+    }
+
+    #[test]
+    fn parse_window_id_rejects_unexpanded_placeholder() {
+        assert!(parse_window_id("@active-kitty-window-id").is_err());
+    }
+
+    #[test]
+    fn parse_window_id_rejects_empty() {
+        assert!(parse_window_id("").is_err());
+    }
+
+    #[test]
+    fn parse_window_id_rejects_non_numeric() {
+        assert!(parse_window_id("abc").is_err());
     }
 }
