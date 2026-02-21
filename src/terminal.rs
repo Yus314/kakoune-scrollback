@@ -359,4 +359,202 @@ mod tests {
         assert_eq!(screen.lines[0].text, "line 0");
         assert_eq!(screen.lines[29].text, "line 29");
     }
+
+    // --- Phase 1: HIGH priority ---
+
+    #[test]
+    fn cursor_position_with_scrollback() {
+        let mut input = Vec::new();
+        for i in 0..30 {
+            input.extend_from_slice(format!("line {i}\r\n").as_bytes());
+        }
+        let pd = KittyPipeData {
+            scrolled_by: 0,
+            cursor_x: 0,
+            cursor_y: 5,
+            lines: 10,
+            columns: 80,
+        };
+        let screen = process_bytes(&pd, &input).unwrap();
+        // 30 lines + trailing \r\n = 31 rows, total_sb = 21
+        // cursor_output_line = 21 + 5 + 1 = 27
+        assert_eq!(screen.cursor.line, 27);
+    }
+
+    #[test]
+    fn cursor_clamped_on_trimmed_empty_lines() {
+        let input = b"Hello";
+        let pd = KittyPipeData {
+            scrolled_by: 0,
+            cursor_x: 0,
+            cursor_y: 23,
+            lines: 24,
+            columns: 80,
+        };
+        let screen = process_bytes(&pd, input).unwrap();
+        // Only line 0 has text "Hello", lines 1-23 are empty and get trimmed
+        // Cursor was at line 24 (1-based), gets clamped to last line
+        assert_eq!(screen.lines.len(), 1);
+        assert_eq!(screen.cursor.line, 1);
+        assert_eq!(screen.cursor.col, 1);
+    }
+
+    #[test]
+    fn multiple_colors_same_line() {
+        let input = b"\x1b[31mRed\x1b[32mGreen\x1b[0m";
+        let pd = default_pipe_data();
+        let screen = process_bytes(&pd, input).unwrap();
+        assert_eq!(screen.lines[0].text, "RedGreen");
+        assert_eq!(screen.lines[0].spans.len(), 2);
+        // Red span: bytes 1..4 (exclusive), covers "Red"
+        assert_eq!(screen.lines[0].spans[0].start_byte, 1);
+        assert_eq!(screen.lines[0].spans[0].end_byte, 4);
+        // Green span: bytes 4..9 (exclusive), covers "Green"
+        assert_eq!(screen.lines[0].spans[1].start_byte, 4);
+        assert_eq!(screen.lines[0].spans[1].end_byte, 9);
+    }
+
+    #[test]
+    fn background_color_only() {
+        let input = b"\x1b[42mHighlighted\x1b[0m";
+        let pd = default_pipe_data();
+        let screen = process_bytes(&pd, input).unwrap();
+        assert_eq!(screen.lines[0].text, "Highlighted");
+        assert_eq!(screen.lines[0].spans.len(), 1);
+        // SGR 42 = green background, default foreground
+        assert_eq!(screen.lines[0].spans[0].face, "default,rgb:00CC00");
+    }
+
+    #[test]
+    fn span_adjustment_on_trailing_trim() {
+        // Red "Hi" followed by red trailing spaces that get trimmed
+        let input = b"\x1b[31mHi   \x1b[0m";
+        let pd = KittyPipeData {
+            scrolled_by: 0,
+            cursor_x: 0,
+            cursor_y: 0,
+            lines: 24,
+            columns: 20,
+        };
+        let screen = process_bytes(&pd, input).unwrap();
+        assert_eq!(screen.lines[0].text, "Hi");
+        assert_eq!(screen.lines[0].spans.len(), 1);
+        // Span should be trimmed to text length: bytes 1..3 (exclusive)
+        assert_eq!(screen.lines[0].spans[0].start_byte, 1);
+        assert_eq!(screen.lines[0].spans[0].end_byte, 3);
+    }
+
+    // --- Phase 2: MEDIUM priority ---
+
+    #[test]
+    fn attribute_dim() {
+        let input = b"\x1b[2mDim\x1b[0m";
+        let pd = default_pipe_data();
+        let screen = process_bytes(&pd, input).unwrap();
+        assert_eq!(screen.lines[0].text, "Dim");
+        assert!(screen.lines[0].spans[0].face.contains("+d"));
+    }
+
+    #[test]
+    fn attribute_underline() {
+        let input = b"\x1b[4mUnderlined\x1b[0m";
+        let pd = default_pipe_data();
+        let screen = process_bytes(&pd, input).unwrap();
+        assert_eq!(screen.lines[0].text, "Underlined");
+        assert!(screen.lines[0].spans[0].face.contains("+u"));
+    }
+
+    #[test]
+    fn attribute_inverse() {
+        let input = b"\x1b[7mReversed\x1b[0m";
+        let pd = default_pipe_data();
+        let screen = process_bytes(&pd, input).unwrap();
+        assert_eq!(screen.lines[0].text, "Reversed");
+        assert!(screen.lines[0].spans[0].face.contains("+r"));
+    }
+
+    #[test]
+    fn reset_then_new_color() {
+        let input = b"\x1b[31mR\x1b[0m N \x1b[34mB\x1b[0m";
+        let pd = default_pipe_data();
+        let screen = process_bytes(&pd, input).unwrap();
+        assert_eq!(screen.lines[0].text, "R N B");
+        assert_eq!(screen.lines[0].spans.len(), 2);
+        // Red span for "R"
+        assert_eq!(screen.lines[0].spans[0].start_byte, 1);
+        assert_eq!(screen.lines[0].spans[0].end_byte, 2);
+        // Blue span for "B"
+        assert_eq!(screen.lines[0].spans[1].start_byte, 5);
+        assert_eq!(screen.lines[0].spans[1].end_byte, 6);
+    }
+
+    #[test]
+    fn line_with_only_formatting_no_visible_text() {
+        let input = b"\x1b[31m   \x1b[0m";
+        let pd = default_pipe_data();
+        let screen = process_bytes(&pd, input).unwrap();
+        // All text was colored spaces, trimmed to empty; all empty lines removed
+        assert!(screen.lines.is_empty());
+    }
+
+    #[test]
+    fn cursor_on_wide_character() {
+        let input = "日test".as_bytes();
+        let pd = KittyPipeData {
+            scrolled_by: 0,
+            cursor_x: 2,
+            cursor_y: 0,
+            lines: 24,
+            columns: 80,
+        };
+        let screen = process_bytes(&pd, input).unwrap();
+        assert_eq!(screen.lines[0].text, "日test");
+        // "日" = 3 bytes (occupies cols 0-1), cursor_x:2 = 't'
+        // byte offset = 3 (0-based) + 1 = 4 (1-based)
+        assert_eq!(screen.cursor.col, 4);
+    }
+
+    #[test]
+    fn scrollback_cursor_position_variants() {
+        let mut input = Vec::new();
+        for i in 0..30 {
+            input.extend_from_slice(format!("line {i}\r\n").as_bytes());
+        }
+
+        // Cursor at first visible line (cursor_y:0)
+        let pd = KittyPipeData {
+            scrolled_by: 0,
+            cursor_x: 0,
+            cursor_y: 0,
+            lines: 10,
+            columns: 80,
+        };
+        let screen = process_bytes(&pd, &input).unwrap();
+        // 30 lines + trailing \r\n = 31 rows, total_sb = 21
+        // cursor_output_line = 21 + 0 + 1 = 22
+        assert_eq!(screen.cursor.line, 22);
+
+        // Cursor at last visible line (cursor_y:9)
+        let pd = KittyPipeData {
+            scrolled_by: 0,
+            cursor_x: 0,
+            cursor_y: 9,
+            lines: 10,
+            columns: 80,
+        };
+        let screen = process_bytes(&pd, &input).unwrap();
+        // cursor_output_line = 21 + 9 + 1 = 31, but trailing empty line trimmed
+        // lines.len() = 30, so cursor clamped to 30 with col = 1
+        assert_eq!(screen.cursor.line, 30);
+        assert_eq!(screen.cursor.col, 1);
+    }
+
+    #[test]
+    fn trailing_spaces_trimmed() {
+        let input = b"Hello";
+        let pd = default_pipe_data(); // 80 columns
+        let screen = process_bytes(&pd, input).unwrap();
+        assert_eq!(screen.lines[0].text, "Hello");
+        assert_eq!(screen.lines[0].text.len(), 5);
+    }
 }

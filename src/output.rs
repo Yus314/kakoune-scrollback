@@ -253,4 +253,208 @@ mod tests {
         assert!(content.contains("ClientClose"));
         assert!(content.contains("rm -rf"));
     }
+
+    // --- Phase 1: HIGH priority ---
+
+    #[test]
+    fn write_ranges_chunking() {
+        const MAX_CHUNK_SIZE: usize = 900_000;
+        let face = "rgb:FF0000,default".to_string();
+
+        // All entries on line 1 → uniform entry '1.1,1.1|rgb:FF0000,default'
+        let sample = format!("'1.1,1.1|{face}'");
+        let num_spans = MAX_CHUNK_SIZE / (sample.len() + 1) + 2;
+
+        let screen = make_screen(
+            vec![ProcessedLine {
+                text: "x".to_string(),
+                spans: (0..num_spans)
+                    .map(|_| Span {
+                        start_byte: 1,
+                        end_byte: 2,
+                        face: face.clone(),
+                    })
+                    .collect(),
+            }],
+            CursorPosition { line: 1, col: 1 },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ranges.kak");
+        write_ranges(&path, &screen).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        let output_lines: Vec<&str> = content.lines().collect();
+        assert!(
+            output_lines.len() >= 2,
+            "Expected chunked output, got {} lines",
+            output_lines.len()
+        );
+        // First chunk has %val{timestamp}
+        assert!(output_lines[0].contains("%val{timestamp}"));
+        // Second chunk uses -add
+        assert!(output_lines[1].contains("-add"));
+    }
+
+    #[test]
+    fn span_end_byte_exclusive_to_inclusive() {
+        use crate::kitty::KittyPipeData;
+        use crate::terminal;
+
+        let input = b"\x1b[31mHello\x1b[0m World";
+        let pd = KittyPipeData {
+            scrolled_by: 0,
+            cursor_x: 0,
+            cursor_y: 0,
+            lines: 24,
+            columns: 80,
+        };
+        let screen = terminal::process_bytes(&pd, input).unwrap();
+
+        // terminal.rs produces exclusive end_byte
+        let span = &screen.lines[0].spans[0];
+        assert_eq!(span.start_byte, 1);
+        assert_eq!(span.end_byte, 6); // exclusive: "Hello" = 5 bytes
+
+        // write_ranges converts to inclusive end (end_byte - 1)
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ranges.kak");
+        write_ranges(&path, &screen).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        // Output should use inclusive end: 6 - 1 = 5
+        assert!(content.contains("1.1,1.5|"));
+    }
+
+    // --- Phase 2: MEDIUM priority ---
+
+    #[test]
+    fn write_text_empty_screen() {
+        let screen = make_screen(vec![], CursorPosition { line: 1, col: 1 });
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("text.txt");
+        write_text(&path, &screen).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn write_ranges_multiple_spans_same_line() {
+        let screen = make_screen(
+            vec![ProcessedLine {
+                text: "RedGreenBlue".to_string(),
+                spans: vec![
+                    Span {
+                        start_byte: 1,
+                        end_byte: 4,
+                        face: "rgb:FF0000,default".to_string(),
+                    },
+                    Span {
+                        start_byte: 4,
+                        end_byte: 9,
+                        face: "rgb:00FF00,default".to_string(),
+                    },
+                    Span {
+                        start_byte: 9,
+                        end_byte: 13,
+                        face: "rgb:0000FF,default".to_string(),
+                    },
+                ],
+            }],
+            CursorPosition { line: 1, col: 1 },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ranges.kak");
+        write_ranges(&path, &screen).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        // All spans should be in one set-option command
+        assert_eq!(content.lines().count(), 1);
+        assert!(content.contains("1.1,1.3|rgb:FF0000,default"));
+        assert!(content.contains("1.4,1.8|rgb:00FF00,default"));
+        assert!(content.contains("1.9,1.12|rgb:0000FF,default"));
+    }
+
+    #[test]
+    fn write_ranges_multiple_lines() {
+        let screen = make_screen(
+            vec![
+                ProcessedLine {
+                    text: "Red".to_string(),
+                    spans: vec![Span {
+                        start_byte: 1,
+                        end_byte: 4,
+                        face: "rgb:FF0000,default".to_string(),
+                    }],
+                },
+                ProcessedLine {
+                    text: "Green".to_string(),
+                    spans: vec![Span {
+                        start_byte: 1,
+                        end_byte: 6,
+                        face: "rgb:00FF00,default".to_string(),
+                    }],
+                },
+                ProcessedLine {
+                    text: "Blue".to_string(),
+                    spans: vec![Span {
+                        start_byte: 1,
+                        end_byte: 5,
+                        face: "rgb:0000FF,default".to_string(),
+                    }],
+                },
+            ],
+            CursorPosition { line: 1, col: 1 },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ranges.kak");
+        write_ranges(&path, &screen).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        assert!(content.contains("1.1,1.3|rgb:FF0000,default"));
+        assert!(content.contains("2.1,2.5|rgb:00FF00,default"));
+        assert!(content.contains("3.1,3.4|rgb:0000FF,default"));
+    }
+
+    // --- Phase 3: LOW priority ---
+
+    #[test]
+    fn write_text_single_empty_line() {
+        let screen = make_screen(
+            vec![ProcessedLine {
+                text: "".to_string(),
+                spans: vec![],
+            }],
+            CursorPosition { line: 1, col: 1 },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("text.txt");
+        write_text(&path, &screen).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "\n");
+    }
+
+    #[test]
+    fn escape_face_single_quote() {
+        assert_eq!(escape_face("it's"), "it''s");
+    }
+
+    #[test]
+    fn write_init_kak_large_cursor_coords() {
+        let screen = make_screen(
+            vec![ProcessedLine {
+                text: "test".to_string(),
+                spans: vec![],
+            }],
+            CursorPosition {
+                line: 1000,
+                col: 50,
+            },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("init.kak");
+        let ranges_path = dir.path().join("ranges.kak");
+        write_init_kak(&path, &screen, "42", dir.path(), &ranges_path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("select 1000.50,1000.50"));
+    }
 }

@@ -122,4 +122,52 @@ mod tests {
         let result = color_to_kak(&vt100::Color::Idx(196), &DEFAULT_PALETTE);
         assert_eq!(result, Some("rgb:FF0000".to_string()));
     }
+
+    // --- Phase 3: LOW priority ---
+
+    #[test]
+    fn idx_to_rgb_panics_on_standard_color() {
+        let result0 = std::panic::catch_unwind(|| idx_to_rgb(0));
+        assert!(result0.is_err(), "idx_to_rgb(0) should panic");
+        let result15 = std::panic::catch_unwind(|| idx_to_rgb(15));
+        assert!(result15.is_err(), "idx_to_rgb(15) should panic");
+    }
+
+    #[test]
+    fn standard_palette_representative_colors() {
+        assert_eq!(
+            color_to_kak(&vt100::Color::Idx(1), &DEFAULT_PALETTE),
+            Some("rgb:CC0000".to_string())
+        );
+        assert_eq!(
+            color_to_kak(&vt100::Color::Idx(4), &DEFAULT_PALETTE),
+            Some("rgb:0000CC".to_string())
+        );
+        assert_eq!(
+            color_to_kak(&vt100::Color::Idx(7), &DEFAULT_PALETTE),
+            Some("rgb:CCCCCC".to_string())
+        );
+        assert_eq!(
+            color_to_kak(&vt100::Color::Idx(15), &DEFAULT_PALETTE),
+            Some("rgb:FFFFFF".to_string())
+        );
+    }
+
+    #[test]
+    fn color_to_kak_with_grayscale_index() {
+        assert_eq!(
+            color_to_kak(&vt100::Color::Idx(232), &DEFAULT_PALETTE),
+            Some("rgb:080808".to_string())
+        );
+        assert_eq!(
+            color_to_kak(&vt100::Color::Idx(255), &DEFAULT_PALETTE),
+            Some("rgb:EEEEEE".to_string())
+        );
+    }
+
+    #[test]
+    fn idx_to_rgb_mid_cube_color() {
+        let (r, g, b) = idx_to_rgb(67);
+        assert_eq!((r, g, b), (95, 135, 175));
+    }
 }
