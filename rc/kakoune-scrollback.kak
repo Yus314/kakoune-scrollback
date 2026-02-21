@@ -41,7 +41,7 @@ define-command kakoune-scrollback-paste %{
     evaluate-commands %sh{
         printf '%s' "$kak_selection" | kitty @ send-text \
             --match="id:${kak_opt_scrollback_kitty_window_id}" \
-            --bracketed-paste \
+            --bracketed-paste=enable \
             --stdin
     }
     kakoune-scrollback-quit
@@ -51,7 +51,7 @@ define-command kakoune-scrollback-execute %{
     evaluate-commands %sh{
         printf '%s' "$kak_selection" | kitty @ send-text \
             --match="id:${kak_opt_scrollback_kitty_window_id}" \
-            --bracketed-paste \
+            --bracketed-paste=enable \
             --stdin
         printf '\r' | kitty @ send-text \
             --match="id:${kak_opt_scrollback_kitty_window_id}" \
@@ -103,7 +103,7 @@ define-command -hidden kakoune-scrollback-submit %{
     evaluate-commands %sh{
         printf '%s' "$kak_reg_dquote" | kitty @ send-text \
             --match="id:${kak_opt_scrollback_kitty_window_id}" \
-            --bracketed-paste \
+            --bracketed-paste=enable \
             --stdin
     }
     delete-buffer *compose*
@@ -115,7 +115,7 @@ define-command -hidden kakoune-scrollback-submit-exec %{
     evaluate-commands %sh{
         printf '%s' "$kak_reg_dquote" | kitty @ send-text \
             --match="id:${kak_opt_scrollback_kitty_window_id}" \
-            --bracketed-paste \
+            --bracketed-paste=enable \
             --stdin
         printf '\r' | kitty @ send-text \
             --match="id:${kak_opt_scrollback_kitty_window_id}" \
