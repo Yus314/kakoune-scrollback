@@ -22,7 +22,7 @@ fn wait_for_keypress() {
     }
 }
 
-fn check_reentry(env_val: Option<String>) -> Result<()> {
+fn check_reentry(env_val: Option<&str>) -> Result<()> {
     if env_val.is_some() {
         bail!("Already inside kakoune-scrollback");
     }
@@ -31,11 +31,11 @@ fn check_reentry(env_val: Option<String>) -> Result<()> {
 
 fn run_core(
     pipe_data: &kitty::KittyPipeData,
-    window_id: &str,
+    window_id: kitty::WindowId,
     palette: &[u8; 48],
     stdin_data: &[u8],
 ) -> Result<(tempfile::TempDir, std::path::PathBuf, std::path::PathBuf)> {
-    let screen = terminal::process_bytes(pipe_data, stdin_data, palette)?;
+    let screen = terminal::process_bytes(pipe_data, stdin_data, palette);
 
     let tmp_dir = tempfile::Builder::new()
         .prefix("ksb-")
@@ -53,19 +53,27 @@ fn run_core(
 }
 
 fn run() -> Result<()> {
-    check_reentry(env::var("KAKOUNE_SCROLLBACK").ok())?;
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    const MAX_STDIN_BYTES: u64 = 512 * 1024 * 1024; // 512 MB
+
+    check_reentry(env::var("KAKOUNE_SCROLLBACK").ok().as_deref())?;
 
     let pipe_data = kitty::parse_pipe_data()?;
     let window_id = kitty::window_id()?;
-    let palette = kitty::get_palette(&window_id);
+    let palette = kitty::get_palette(window_id);
     let mut stdin_data = Vec::new();
-    std::io::Read::read_to_end(&mut std::io::stdin(), &mut stdin_data)?;
+    std::io::stdin().take(MAX_STDIN_BYTES)
+        .read_to_end(&mut stdin_data)?;
+    anyhow::ensure!(
+        (stdin_data.len() as u64) < MAX_STDIN_BYTES,
+        "scrollback input exceeds {MAX_STDIN_BYTES} bytes, aborting"
+    );
 
-    let (tmp_dir, text_path, init_path) = run_core(&pipe_data, &window_id, &palette, &stdin_data)?;
+    let (tmp_dir, text_path, init_path) = run_core(&pipe_data, window_id, &palette, &stdin_data)?;
 
     let tmp_path = tmp_dir.keep();
 
-    use std::os::unix::process::CommandExt;
     let err = std::process::Command::new("kak")
         .env("KAKOUNE_SCROLLBACK", "1")
         .arg("-e")
@@ -80,7 +88,11 @@ fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kitty::KittyPipeData;
+    use crate::kitty::{KittyPipeData, WindowId};
+
+    fn wid(s: &str) -> WindowId {
+        kitty::parse_window_id(s).unwrap()
+    }
 
     fn default_pipe_data() -> KittyPipeData {
         KittyPipeData {
@@ -94,7 +106,7 @@ mod tests {
     /// Run `run_core()`, read back the 3 output files, return their contents and the TempDir.
     fn run_and_read(
         pipe_data: &KittyPipeData,
-        window_id: &str,
+        window_id: WindowId,
         palette: &[u8; 48],
         stdin_data: &[u8],
     ) -> (String, String, String, tempfile::TempDir) {
@@ -111,7 +123,7 @@ mod tests {
 
     #[test]
     fn check_reentry_blocks() {
-        let err = check_reentry(Some("1".into()));
+        let err = check_reentry(Some("1"));
         assert!(err.is_err());
         assert!(
             err.unwrap_err()
@@ -131,7 +143,7 @@ mod tests {
     fn pipeline_creates_expected_files() {
         let pd = default_pipe_data();
         let (tmp_dir, text_path, init_path) =
-            run_core(&pd, "1", &palette::DEFAULT_PALETTE, b"hello").unwrap();
+            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"hello").unwrap();
         let ranges_path = tmp_dir.path().join("ranges.kak");
 
         assert!(text_path.exists());
@@ -154,7 +166,7 @@ mod tests {
     #[test]
     fn pipeline_tmpdir_not_kept() {
         let pd = default_pipe_data();
-        let (tmp_dir, _, _) = run_core(&pd, "1", &palette::DEFAULT_PALETTE, b"hello").unwrap();
+        let (tmp_dir, _, _) = run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"hello").unwrap();
         let path = tmp_dir.path().to_path_buf();
         assert!(path.exists());
         drop(tmp_dir);
@@ -175,7 +187,7 @@ mod tests {
             columns: 80,
         };
         let (text, ranges, init, _td) =
-            run_and_read(&pd, "42", &palette::DEFAULT_PALETTE, b"line one\r\nline two");
+            run_and_read(&pd, wid("42"), &palette::DEFAULT_PALETTE, b"line one\r\nline two");
 
         assert_eq!(text, "line one\nline two\n");
         // No ANSI colors → ranges should be empty
@@ -195,7 +207,7 @@ mod tests {
         };
         let input = b"\x1b[31mRed\x1b[0m Normal";
         let (text, ranges, init, _td) =
-            run_and_read(&pd, "1", &palette::DEFAULT_PALETTE, input);
+            run_and_read(&pd, wid("1"), &palette::DEFAULT_PALETTE, input);
 
         assert_eq!(text, "Red Normal\n");
         // ranges should contain a face for the red text
@@ -218,7 +230,7 @@ mod tests {
             columns: 80,
         };
         let (_text, _ranges, init, _td) =
-            run_and_read(&pd, "1", &palette::DEFAULT_PALETTE, &input);
+            run_and_read(&pd, wid("1"), &palette::DEFAULT_PALETTE, &input);
 
         // total_sb = 21, cursor_output_line = 21 + 5 + 1 = 27
         assert!(init.contains("select 27.1,27.1"));
@@ -234,7 +246,7 @@ mod tests {
 
         let pd = default_pipe_data();
         let input = b"\x1b[31mColored\x1b[0m";
-        let (_text, ranges, _init, _td) = run_and_read(&pd, "1", &custom_palette, input);
+        let (_text, ranges, _init, _td) = run_and_read(&pd, wid("1"), &custom_palette, input);
 
         // SGR 31 = color index 1 → should resolve to our custom #AABBCC
         assert!(
@@ -247,7 +259,7 @@ mod tests {
     fn pipeline_empty_input() {
         let pd = default_pipe_data();
         let (text, ranges, init, _td) =
-            run_and_read(&pd, "1", &palette::DEFAULT_PALETTE, b"");
+            run_and_read(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"");
 
         // Empty input → text is empty, ranges empty, but init still has structure
         assert!(text.is_empty() || text == "\n");
@@ -262,7 +274,7 @@ mod tests {
     fn pipeline_init_references_actual_tmpdir() {
         let pd = default_pipe_data();
         let (tmp_dir, _, init_path) =
-            run_core(&pd, "1", &palette::DEFAULT_PALETTE, b"hello").unwrap();
+            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"hello").unwrap();
         let init = std::fs::read_to_string(&init_path).unwrap();
         let tmp_dir_str = tmp_dir.path().to_str().unwrap();
 
@@ -277,7 +289,7 @@ mod tests {
     fn pipeline_init_window_id_propagated() {
         let pd = default_pipe_data();
         let (_text, _ranges, init, _td) =
-            run_and_read(&pd, "999", &palette::DEFAULT_PALETTE, b"test");
+            run_and_read(&pd, wid("999"), &palette::DEFAULT_PALETTE, b"test");
 
         assert!(
             init.contains("scrollback_kitty_window_id '999'"),
@@ -298,7 +310,7 @@ mod tests {
             columns: 80,
         };
         let (_text, _ranges, init, _td) =
-            run_and_read(&pd, "1", &palette::DEFAULT_PALETTE, input);
+            run_and_read(&pd, wid("1"), &palette::DEFAULT_PALETTE, input);
 
         // "日本語" = 9 bytes, cursor_x:6 lands on 't', byte offset = 9 + 1 = 10 (1-based)
         assert!(

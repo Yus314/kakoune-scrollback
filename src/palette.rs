@@ -23,7 +23,7 @@ pub const DEFAULT_PALETTE: [u8; 48] = [
 /// Parse `kitty @ get-colors` output into a 48-byte ANSI palette.
 ///
 /// Expects lines like `colorN #RRGGBB` (or `colorN #RGB`).
-/// Missing colors keep their DEFAULT_PALETTE values.
+/// Missing colors keep their `DEFAULT_PALETTE` values.
 pub fn parse_kitty_colors(output: &str) -> [u8; 48] {
     let mut palette = DEFAULT_PALETTE;
     for line in output.lines() {
@@ -86,17 +86,17 @@ pub fn idx_to_rgb(idx: u8) -> (u8, u8, u8) {
     }
 }
 
-/// Convert vt100::Color to Kakoune face color string
-pub fn color_to_kak(color: &vt100::Color, palette: &[u8; 48]) -> Option<String> {
+/// Convert `vt100::Color` to Kakoune face color string
+pub fn color_to_kak(color: vt100::Color, palette: &[u8; 48]) -> Option<String> {
     match color {
         vt100::Color::Default => None,
         vt100::Color::Rgb(r, g, b) => Some(format!("rgb:{r:02X}{g:02X}{b:02X}")),
         vt100::Color::Idx(idx) => {
-            let (r, g, b) = if *idx < 16 {
-                let base = *idx as usize * 3;
+            let (r, g, b) = if idx < 16 {
+                let base = idx as usize * 3;
                 (palette[base], palette[base + 1], palette[base + 2])
             } else {
-                idx_to_rgb(*idx)
+                idx_to_rgb(idx)
             };
             Some(format!("rgb:{r:02X}{g:02X}{b:02X}"))
         }
@@ -109,23 +109,23 @@ mod tests {
 
     #[test]
     fn default_color_returns_none() {
-        assert_eq!(color_to_kak(&vt100::Color::Default, &DEFAULT_PALETTE), None);
+        assert_eq!(color_to_kak(vt100::Color::Default, &DEFAULT_PALETTE), None);
     }
 
     #[test]
     fn rgb_passthrough() {
-        let result = color_to_kak(&vt100::Color::Rgb(0xFF, 0x00, 0xAB), &DEFAULT_PALETTE);
+        let result = color_to_kak(vt100::Color::Rgb(0xFF, 0x00, 0xAB), &DEFAULT_PALETTE);
         assert_eq!(result, Some("rgb:FF00AB".to_string()));
     }
 
     #[test]
     fn indexed_standard_colors() {
         // Color 0 = black
-        let result = color_to_kak(&vt100::Color::Idx(0), &DEFAULT_PALETTE);
+        let result = color_to_kak(vt100::Color::Idx(0), &DEFAULT_PALETTE);
         assert_eq!(result, Some("rgb:000000".to_string()));
 
         // Color 9 = bright red
-        let result = color_to_kak(&vt100::Color::Idx(9), &DEFAULT_PALETTE);
+        let result = color_to_kak(vt100::Color::Idx(9), &DEFAULT_PALETTE);
         assert_eq!(result, Some("rgb:FF0000".to_string()));
     }
 
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn indexed_color_to_kak() {
-        let result = color_to_kak(&vt100::Color::Idx(196), &DEFAULT_PALETTE);
+        let result = color_to_kak(vt100::Color::Idx(196), &DEFAULT_PALETTE);
         assert_eq!(result, Some("rgb:FF0000".to_string()));
     }
 
@@ -182,19 +182,19 @@ mod tests {
     #[test]
     fn standard_palette_representative_colors() {
         assert_eq!(
-            color_to_kak(&vt100::Color::Idx(1), &DEFAULT_PALETTE),
+            color_to_kak(vt100::Color::Idx(1), &DEFAULT_PALETTE),
             Some("rgb:CC0000".to_string())
         );
         assert_eq!(
-            color_to_kak(&vt100::Color::Idx(4), &DEFAULT_PALETTE),
+            color_to_kak(vt100::Color::Idx(4), &DEFAULT_PALETTE),
             Some("rgb:0000CC".to_string())
         );
         assert_eq!(
-            color_to_kak(&vt100::Color::Idx(7), &DEFAULT_PALETTE),
+            color_to_kak(vt100::Color::Idx(7), &DEFAULT_PALETTE),
             Some("rgb:CCCCCC".to_string())
         );
         assert_eq!(
-            color_to_kak(&vt100::Color::Idx(15), &DEFAULT_PALETTE),
+            color_to_kak(vt100::Color::Idx(15), &DEFAULT_PALETTE),
             Some("rgb:FFFFFF".to_string())
         );
     }
@@ -202,11 +202,11 @@ mod tests {
     #[test]
     fn color_to_kak_with_grayscale_index() {
         assert_eq!(
-            color_to_kak(&vt100::Color::Idx(232), &DEFAULT_PALETTE),
+            color_to_kak(vt100::Color::Idx(232), &DEFAULT_PALETTE),
             Some("rgb:080808".to_string())
         );
         assert_eq!(
-            color_to_kak(&vt100::Color::Idx(255), &DEFAULT_PALETTE),
+            color_to_kak(vt100::Color::Idx(255), &DEFAULT_PALETTE),
             Some("rgb:EEEEEE".to_string())
         );
     }

@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use crate::kitty::WindowId;
 use crate::terminal::ProcessedScreen;
 
 /// Generate plain text file
@@ -24,10 +25,13 @@ pub fn write_text(path: &Path, screen: &ProcessedScreen) -> Result<()> {
 
 /// Generate range-specs command file
 pub fn write_ranges(path: &Path, screen: &ProcessedScreen) -> Result<()> {
-    let mut f = std::fs::File::create(path)?;
+    const MAX_CHUNK_SIZE: usize = 900_000; // ~900KB per command
 
-    // Collect all range-spec entries
-    let mut entries = Vec::new();
+    let mut f = std::fs::File::create(path)?;
+    let mut chunk = String::with_capacity(MAX_CHUNK_SIZE);
+    chunk.push_str("set-option buffer scrollback_colors %val{timestamp}");
+    let mut chunk_has_entries = false;
+
     for (line_idx, line) in screen.lines.iter().enumerate() {
         let line_num = line_idx + 1; // 1-based
         for span in &line.spans {
@@ -36,32 +40,27 @@ pub fn write_ranges(path: &Path, screen: &ProcessedScreen) -> Result<()> {
             // Range format: "line.start_col,line.end_col|face"
             // end_byte is exclusive, but Kakoune range-specs uses inclusive end
             let end_byte_inclusive = span.end_byte - 1;
-            entries.push(format!(
+            let entry = format!(
                 "'{line_num}.{start},{line_num}.{end}|{face}'",
                 start = span.start_byte,
                 end = end_byte_inclusive,
                 face = escaped_face,
-            ));
+            );
+
+            // Flush chunk if adding this entry would exceed limit
+            if chunk.len() + 1 + entry.len() > MAX_CHUNK_SIZE && chunk_has_entries {
+                writeln!(f, "{chunk}")?;
+                chunk.clear();
+                chunk.push_str("set-option -add buffer scrollback_colors");
+            }
+
+            chunk.push(' ');
+            chunk.push_str(&entry);
+            chunk_has_entries = true;
         }
     }
 
-    if entries.is_empty() {
-        return Ok(());
-    }
-
-    // Write as set-option command(s), splitting if too large
-    const MAX_CHUNK_SIZE: usize = 900_000; // ~900KB per command
-
-    let mut chunk = String::from("set-option buffer scrollback_colors %val{timestamp}");
-    for entry in &entries {
-        if chunk.len() + 1 + entry.len() > MAX_CHUNK_SIZE && chunk.contains('\'') {
-            // Write current chunk and start a new one with -add
-            writeln!(f, "{chunk}")?;
-            chunk = String::from("set-option -add buffer scrollback_colors");
-        }
-        write!(chunk, " {entry}")?;
-    }
-    if !chunk.is_empty() {
+    if chunk_has_entries {
         writeln!(f, "{chunk}")?;
     }
 
@@ -70,23 +69,16 @@ pub fn write_ranges(path: &Path, screen: &ProcessedScreen) -> Result<()> {
 
 /// Escape | and \ in face strings for range-specs
 fn escape_face(face: &str) -> String {
-    let mut result = String::with_capacity(face.len());
-    for ch in face.chars() {
-        match ch {
-            '\\' => result.push_str("\\\\"),
-            '|' => result.push_str("\\|"),
-            '\'' => result.push_str("''"),
-            _ => result.push(ch),
-        }
-    }
-    result
+    face.replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace('\'', "''")
 }
 
 /// Generate Kakoune initialization script
 pub fn write_init_kak(
     path: &Path,
     screen: &ProcessedScreen,
-    window_id: &str,
+    window_id: WindowId,
     tmp_dir: &Path,
     ranges_path: &Path,
 ) -> Result<()> {
@@ -158,7 +150,12 @@ pub fn write_init_kak(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kitty;
     use crate::terminal::{CursorPosition, ProcessedLine, ProcessedScreen, Span};
+
+    fn wid(s: &str) -> kitty::WindowId {
+        kitty::parse_window_id(s).unwrap()
+    }
 
     fn make_screen(lines: Vec<ProcessedLine>, cursor: CursorPosition) -> ProcessedScreen {
         ProcessedScreen { lines, cursor }
@@ -242,7 +239,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("init.kak");
         let ranges_path = dir.path().join("ranges.kak");
-        write_init_kak(&path, &screen, "42", dir.path(), &ranges_path).unwrap();
+        write_init_kak(&path, &screen, wid("42"), dir.path(), &ranges_path).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
 
         assert!(content.contains("scrollback_kitty_window_id '42'"));
@@ -307,7 +304,7 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let screen = terminal::process_bytes(&pd, input, &crate::palette::DEFAULT_PALETTE).unwrap();
+        let screen = terminal::process_bytes(&pd, input, &crate::palette::DEFAULT_PALETTE);
 
         // terminal.rs produces exclusive end_byte
         let span = &screen.lines[0].spans[0];
@@ -452,7 +449,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("init.kak");
         let ranges_path = dir.path().join("ranges.kak");
-        write_init_kak(&path, &screen, "42", dir.path(), &ranges_path).unwrap();
+        write_init_kak(&path, &screen, wid("42"), dir.path(), &ranges_path).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("select 1000.50,1000.50"));
     }

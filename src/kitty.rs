@@ -1,6 +1,18 @@
+use std::fmt;
+
 use anyhow::{bail, Context, Result};
 
 use crate::palette;
+
+/// A validated Kitty window ID (non-zero u32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowId(u32);
+
+impl fmt::Display for WindowId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 pub struct KittyPipeData {
     pub cursor_x: usize,
@@ -10,41 +22,48 @@ pub struct KittyPipeData {
 }
 
 /// Pure function: parse from string (separated for testability)
-/// Format: "scrolled_by[,cursor_x]:cursor_y:lines,columns"
+/// Format: `scrolled_by[,cursor_x]:cursor_y:lines,columns`
 pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
-    let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() != 3 {
-        bail!("KITTY_PIPE_DATA: expected 3 colon-separated parts, got {}", parts.len());
+    let (part0, rest) = s.split_once(':')
+        .context("KITTY_PIPE_DATA: expected 3 colon-separated parts")?;
+    let (part1, part2) = rest.split_once(':')
+        .context("KITTY_PIPE_DATA: expected 3 colon-separated parts")?;
+    if part2.contains(':') {
+        bail!("KITTY_PIPE_DATA: expected 3 colon-separated parts");
     }
 
-    let first: Vec<&str> = parts[0].split(',').collect();
-    let (_scrolled_by_str, cursor_x_str) = match first.len() {
-        1 => (first[0], "0"),
-        2 => (first[0], first[1]),
-        _ => bail!("KITTY_PIPE_DATA: invalid first part '{}'", parts[0]),
+    let (scrolled_by_str, cursor_x_str) = match part0.split_once(',') {
+        None => (part0, "0"),
+        Some((a, b)) => {
+            if b.contains(',') {
+                bail!("KITTY_PIPE_DATA: invalid first part '{part0}'");
+            }
+            (a, b)
+        }
     };
 
     // Validate scrolled_by is numeric even though we don't use the value
-    let _scrolled_by: usize = _scrolled_by_str.parse().context("KITTY_PIPE_DATA: invalid scrolled_by")?;
+    let _scrolled_by: usize = scrolled_by_str.parse().context("KITTY_PIPE_DATA: invalid scrolled_by")?;
 
-    let cursor_y: usize = parts[1].split(',').next()
+    let cursor_y: usize = part1.split(',').next()
         .context("KITTY_PIPE_DATA: missing cursor_y")?
         .parse().context("KITTY_PIPE_DATA: invalid cursor_y")?;
 
-    let last: Vec<&str> = parts[2].split(',').collect();
-    if last.len() != 2 {
-        bail!("KITTY_PIPE_DATA: expected 'lines,columns' in third part, got '{}'", parts[2]);
+    let (lines_str, columns_str) = part2.split_once(',')
+        .with_context(|| format!("KITTY_PIPE_DATA: expected 'lines,columns' in third part, got '{part2}'"))?;
+    if columns_str.contains(',') {
+        bail!("KITTY_PIPE_DATA: expected 'lines,columns' in third part, got '{part2}'");
     }
 
     Ok(KittyPipeData {
         cursor_x: cursor_x_str.parse().context("KITTY_PIPE_DATA: invalid cursor_x")?,
         cursor_y,
-        lines: last[0].parse().context("KITTY_PIPE_DATA: invalid lines")?,
-        columns: last[1].parse().context("KITTY_PIPE_DATA: invalid columns")?,
+        lines: lines_str.parse().context("KITTY_PIPE_DATA: invalid lines")?,
+        columns: columns_str.parse().context("KITTY_PIPE_DATA: invalid columns")?,
     })
 }
 
-/// Read KITTY_PIPE_DATA environment variable and delegate to parse_pipe_data_str
+/// Read `KITTY_PIPE_DATA` environment variable and delegate to `parse_pipe_data_str`
 pub fn parse_pipe_data() -> Result<KittyPipeData> {
     let val = std::env::var("KITTY_PIPE_DATA")
         .context("KITTY_PIPE_DATA environment variable not set")?;
@@ -52,17 +71,17 @@ pub fn parse_pipe_data() -> Result<KittyPipeData> {
 }
 
 /// Pure function: validate and parse a kitty window ID string (separated for testability)
-pub fn parse_window_id(s: &str) -> Result<String> {
+pub fn parse_window_id(s: &str) -> Result<WindowId> {
     let id: u32 = s.parse()
         .with_context(|| format!("invalid kitty window ID '{s}' — expected a number (check your kitty.conf)"))?;
     if id == 0 {
         bail!("invalid kitty window ID '0' — window IDs start at 1");
     }
-    Ok(id.to_string())
+    Ok(WindowId(id))
 }
 
-/// Read the target window ID from the first CLI argument and delegate to parse_window_id
-pub fn window_id() -> Result<String> {
+/// Read the target window ID from the first CLI argument and delegate to `parse_window_id`
+pub fn window_id() -> Result<WindowId> {
     let val = std::env::args()
         .nth(1)
         .context("missing target window ID argument (update your kitty.conf — see README)")?;
@@ -70,8 +89,8 @@ pub fn window_id() -> Result<String> {
 }
 
 /// Query the running Kitty instance for its color palette.
-/// Falls back to DEFAULT_PALETTE if the command fails.
-pub fn get_palette(window_id: &str) -> [u8; 48] {
+/// Falls back to `DEFAULT_PALETTE` with a warning if the command fails.
+pub fn get_palette(window_id: WindowId) -> [u8; 48] {
     let output = std::process::Command::new("kitty")
         .args(["@", "get-colors", "--match", &format!("id:{window_id}")])
         .output();
@@ -80,7 +99,19 @@ pub fn get_palette(window_id: &str) -> [u8; 48] {
             let text = String::from_utf8_lossy(&out.stdout);
             palette::parse_kitty_colors(&text)
         }
-        _ => palette::DEFAULT_PALETTE,
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            eprintln!(
+                "warning: kitty @ get-colors failed ({}): {}\nUsing default palette.",
+                out.status,
+                stderr.trim(),
+            );
+            palette::DEFAULT_PALETTE
+        }
+        Err(e) => {
+            eprintln!("warning: failed to run kitty @ get-colors: {e}\nUsing default palette.");
+            palette::DEFAULT_PALETTE
+        }
     }
 }
 
@@ -127,13 +158,19 @@ mod tests {
 
     #[test]
     fn parse_window_id_valid() {
-        assert_eq!(parse_window_id("42").unwrap(), "42");
-        assert_eq!(parse_window_id("1").unwrap(), "1");
+        assert_eq!(parse_window_id("42").unwrap(), WindowId(42));
+        assert_eq!(parse_window_id("1").unwrap(), WindowId(1));
     }
 
     #[test]
     fn parse_window_id_normalizes() {
-        assert_eq!(parse_window_id("042").unwrap(), "42");
+        assert_eq!(parse_window_id("042").unwrap(), WindowId(42));
+    }
+
+    #[test]
+    fn window_id_display() {
+        assert_eq!(WindowId(42).to_string(), "42");
+        assert_eq!(WindowId(1).to_string(), "1");
     }
 
     #[test]
