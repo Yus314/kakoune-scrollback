@@ -307,7 +307,7 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let screen = terminal::process_bytes(&pd, input).unwrap();
+        let screen = terminal::process_bytes(&pd, input, &crate::palette::DEFAULT_PALETTE).unwrap();
 
         // terminal.rs produces exclusive end_byte
         let span = &screen.lines[0].spans[0];

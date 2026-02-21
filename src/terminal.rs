@@ -27,14 +27,14 @@ pub struct Span {
 }
 
 /// Read ANSI data from stdin, process with vt100, return all lines
-pub fn process_stdin(pipe_data: &KittyPipeData) -> Result<ProcessedScreen> {
+pub fn process_stdin(pipe_data: &KittyPipeData, palette: &[u8; 48]) -> Result<ProcessedScreen> {
     let mut data = Vec::new();
     std::io::stdin().read_to_end(&mut data)?;
-    process_bytes(pipe_data, &data)
+    process_bytes(pipe_data, &data, palette)
 }
 
 /// Process from byte slice directly (for testing)
-pub fn process_bytes(pipe_data: &KittyPipeData, data: &[u8]) -> Result<ProcessedScreen> {
+pub fn process_bytes(pipe_data: &KittyPipeData, data: &[u8], palette: &[u8; 48]) -> Result<ProcessedScreen> {
     let max_scrollback: usize = std::env::var("KAKOUNE_SCROLLBACK_MAX_LINES")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -64,7 +64,7 @@ pub fn process_bytes(pipe_data: &KittyPipeData, data: &[u8]) -> Result<Processed
         for row in 0..rows {
             let line_idx = lines.len();
             let is_cursor_line = line_idx + 1 == cursor_output_line;
-            let pline = process_row(screen, row, cols, pipe_data, is_cursor_line, &mut cursor);
+            let pline = process_row(screen, row, cols, pipe_data, is_cursor_line, &mut cursor, palette);
             lines.push(pline);
             if is_cursor_line {
                 cursor.line = line_idx + 1;
@@ -77,7 +77,7 @@ pub fn process_bytes(pipe_data: &KittyPipeData, data: &[u8]) -> Result<Processed
             let line_idx = lines.len();
             let is_cursor_line = line_idx + 1 == cursor_output_line;
             let pline =
-                process_row(screen, rows - 1, cols, pipe_data, is_cursor_line, &mut cursor);
+                process_row(screen, rows - 1, cols, pipe_data, is_cursor_line, &mut cursor, palette);
             lines.push(pline);
             if is_cursor_line {
                 cursor.line = line_idx + 1;
@@ -89,7 +89,7 @@ pub fn process_bytes(pipe_data: &KittyPipeData, data: &[u8]) -> Result<Processed
         for row in 0..rows {
             let line_idx = lines.len();
             let is_cursor_line = line_idx + 1 == cursor_output_line;
-            let pline = process_row(screen, row, cols, pipe_data, is_cursor_line, &mut cursor);
+            let pline = process_row(screen, row, cols, pipe_data, is_cursor_line, &mut cursor, palette);
             lines.push(pline);
             if is_cursor_line {
                 cursor.line = line_idx + 1;
@@ -118,6 +118,7 @@ fn process_row(
     pipe_data: &KittyPipeData,
     is_cursor_line: bool,
     cursor: &mut CursorPosition,
+    palette: &[u8; 48],
 ) -> ProcessedLine {
     let mut text = String::new();
     let mut spans: Vec<Span> = Vec::new();
@@ -151,7 +152,7 @@ fn process_row(
         }
 
         // Compute face for this cell
-        let face = cell_face(cell);
+        let face = cell_face(cell, palette);
 
         if face != current_face {
             // Close previous span if any
@@ -199,9 +200,9 @@ fn process_row(
     ProcessedLine { text, spans }
 }
 
-fn cell_face(cell: &vt100::Cell) -> Option<String> {
-    let fg = palette::color_to_kak(&cell.fgcolor(), &palette::DEFAULT_PALETTE);
-    let bg = palette::color_to_kak(&cell.bgcolor(), &palette::DEFAULT_PALETTE);
+fn cell_face(cell: &vt100::Cell, palette: &[u8; 48]) -> Option<String> {
+    let fg = palette::color_to_kak(&cell.fgcolor(), palette);
+    let bg = palette::color_to_kak(&cell.bgcolor(), palette);
 
     let mut attrs = String::new();
     if cell.bold() {
@@ -252,7 +253,7 @@ mod tests {
     fn process_plain_text() {
         let input = b"Hello World";
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "Hello World");
         assert_eq!(screen.lines[0].spans.len(), 0);
     }
@@ -261,7 +262,7 @@ mod tests {
     fn process_colored_text() {
         let input = b"\x1b[31mHello\x1b[0m World";
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "Hello World");
         assert!(screen.lines[0].spans.len() >= 1);
         assert!(screen.lines[0].spans[0].face.contains("rgb:"));
@@ -271,7 +272,7 @@ mod tests {
     fn default_spans_skipped() {
         let input = b"plain text";
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].spans.len(), 0);
     }
 
@@ -280,7 +281,7 @@ mod tests {
         // Entire "Hello World" in red — should be 1 span
         let input = b"\x1b[31mHello World\x1b[0m";
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "Hello World");
         assert_eq!(screen.lines[0].spans.len(), 1);
     }
@@ -289,7 +290,7 @@ mod tests {
     fn wide_characters() {
         let input = "日本語test".as_bytes();
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "日本語test");
     }
 
@@ -298,7 +299,7 @@ mod tests {
         // "日" = 3 bytes, "本" = 3 bytes, "語" = 3 bytes
         let input = b"\x1b[31m\xe6\x97\xa5\x1b[0m\xe6\x9c\xac"; // red "日" + normal "本"
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "日本");
         assert_eq!(screen.lines[0].spans.len(), 1);
         // Red span covers "日" = bytes 1..4 (1-based, exclusive end)
@@ -310,7 +311,7 @@ mod tests {
     fn attributes_combined() {
         let input = b"\x1b[1;3mBoldItalic\x1b[0m";
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert!(screen.lines[0].spans[0].face.contains("+bi"));
     }
 
@@ -323,7 +324,7 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         // Cursor should be on line 3 (1-based), col 4 (1-based, after "lin")
         assert_eq!(screen.cursor.line, 3);
         assert_eq!(screen.cursor.col, 4);
@@ -332,7 +333,7 @@ mod tests {
     #[test]
     fn empty_input() {
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, b"").unwrap();
+        let screen = process_bytes(&pd, b"", &palette::DEFAULT_PALETTE).unwrap();
         // Should have no lines (all trimmed as empty)
         assert!(screen.lines.is_empty() || screen.lines.iter().all(|l| l.text.is_empty()));
     }
@@ -350,7 +351,7 @@ mod tests {
             lines: 10,
             columns: 80,
         };
-        let screen = process_bytes(&pd, &input).unwrap();
+        let screen = process_bytes(&pd, &input, &palette::DEFAULT_PALETTE).unwrap();
         // Should have all 30 lines (some in scrollback, some on screen)
         assert!(screen.lines.len() >= 30);
         assert_eq!(screen.lines[0].text, "line 0");
@@ -371,7 +372,7 @@ mod tests {
             lines: 10,
             columns: 80,
         };
-        let screen = process_bytes(&pd, &input).unwrap();
+        let screen = process_bytes(&pd, &input, &palette::DEFAULT_PALETTE).unwrap();
         // 30 lines + trailing \r\n = 31 rows, total_sb = 21
         // cursor_output_line = 21 + 5 + 1 = 27
         assert_eq!(screen.cursor.line, 27);
@@ -386,7 +387,7 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         // Only line 0 has text "Hello", lines 1-23 are empty and get trimmed
         // Cursor was at line 24 (1-based), gets clamped to last line
         assert_eq!(screen.lines.len(), 1);
@@ -398,7 +399,7 @@ mod tests {
     fn multiple_colors_same_line() {
         let input = b"\x1b[31mRed\x1b[32mGreen\x1b[0m";
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "RedGreen");
         assert_eq!(screen.lines[0].spans.len(), 2);
         // Red span: bytes 1..4 (exclusive), covers "Red"
@@ -413,7 +414,7 @@ mod tests {
     fn background_color_only() {
         let input = b"\x1b[42mHighlighted\x1b[0m";
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "Highlighted");
         assert_eq!(screen.lines[0].spans.len(), 1);
         // SGR 42 = green background, default foreground
@@ -430,7 +431,7 @@ mod tests {
             lines: 24,
             columns: 20,
         };
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "Hi");
         assert_eq!(screen.lines[0].spans.len(), 1);
         // Span should be trimmed to text length: bytes 1..3 (exclusive)
@@ -444,7 +445,7 @@ mod tests {
     fn attribute_dim() {
         let input = b"\x1b[2mDim\x1b[0m";
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "Dim");
         assert!(screen.lines[0].spans[0].face.contains("+d"));
     }
@@ -453,7 +454,7 @@ mod tests {
     fn attribute_underline() {
         let input = b"\x1b[4mUnderlined\x1b[0m";
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "Underlined");
         assert!(screen.lines[0].spans[0].face.contains("+u"));
     }
@@ -462,7 +463,7 @@ mod tests {
     fn attribute_inverse() {
         let input = b"\x1b[7mReversed\x1b[0m";
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "Reversed");
         assert!(screen.lines[0].spans[0].face.contains("+r"));
     }
@@ -471,7 +472,7 @@ mod tests {
     fn reset_then_new_color() {
         let input = b"\x1b[31mR\x1b[0m N \x1b[34mB\x1b[0m";
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "R N B");
         assert_eq!(screen.lines[0].spans.len(), 2);
         // Red span for "R"
@@ -486,7 +487,7 @@ mod tests {
     fn line_with_only_formatting_no_visible_text() {
         let input = b"\x1b[31m   \x1b[0m";
         let pd = default_pipe_data();
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         // All text was colored spaces, trimmed to empty; all empty lines removed
         assert!(screen.lines.is_empty());
     }
@@ -500,7 +501,7 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "日test");
         // "日" = 3 bytes (occupies cols 0-1), cursor_x:2 = 't'
         // byte offset = 3 (0-based) + 1 = 4 (1-based)
@@ -521,7 +522,7 @@ mod tests {
             lines: 10,
             columns: 80,
         };
-        let screen = process_bytes(&pd, &input).unwrap();
+        let screen = process_bytes(&pd, &input, &palette::DEFAULT_PALETTE).unwrap();
         // 30 lines + trailing \r\n = 31 rows, total_sb = 21
         // cursor_output_line = 21 + 0 + 1 = 22
         assert_eq!(screen.cursor.line, 22);
@@ -533,7 +534,7 @@ mod tests {
             lines: 10,
             columns: 80,
         };
-        let screen = process_bytes(&pd, &input).unwrap();
+        let screen = process_bytes(&pd, &input, &palette::DEFAULT_PALETTE).unwrap();
         // cursor_output_line = 21 + 9 + 1 = 31, but trailing empty line trimmed
         // lines.len() = 30, so cursor clamped to 30 with col = 1
         assert_eq!(screen.cursor.line, 30);
@@ -544,7 +545,7 @@ mod tests {
     fn trailing_spaces_trimmed() {
         let input = b"Hello";
         let pd = default_pipe_data(); // 80 columns
-        let screen = process_bytes(&pd, input).unwrap();
+        let screen = process_bytes(&pd, input, &palette::DEFAULT_PALETTE).unwrap();
         assert_eq!(screen.lines[0].text, "Hello");
         assert_eq!(screen.lines[0].text.len(), 5);
     }

@@ -9,7 +9,16 @@ use std::env;
 fn main() {
     if let Err(e) = run() {
         eprintln!("kakoune-scrollback: {e:#}");
+        eprintln!("\nPress Enter to close.");
+        wait_for_keypress();
         std::process::exit(1);
+    }
+}
+
+fn wait_for_keypress() {
+    use std::io::BufRead;
+    if let Ok(tty) = std::fs::File::open("/dev/tty") {
+        let _ = std::io::BufReader::new(tty).read_line(&mut String::new());
     }
 }
 
@@ -23,10 +32,13 @@ fn run() -> Result<()> {
     let pipe_data = kitty::parse_pipe_data()?;
     let window_id = kitty::window_id()?;
 
-    // 3. Read stdin + vt100 processing (cursor position calculated in Rust)
-    let screen = terminal::process_stdin(&pipe_data)?;
+    // 3. Query Kitty for palette colors (falls back to defaults)
+    let palette = kitty::get_palette(&window_id);
 
-    // 4. Create temporary directory
+    // 4. Read stdin + vt100 processing (cursor position calculated in Rust)
+    let screen = terminal::process_stdin(&pipe_data, &palette)?;
+
+    // 5. Create temporary directory
     let tmp_dir = tempfile::Builder::new()
         .prefix("ksb-")
         .tempdir()
@@ -35,15 +47,15 @@ fn run() -> Result<()> {
     let ranges_path = tmp_dir.path().join("ranges.kak");
     let init_path = tmp_dir.path().join("init.kak");
 
-    // 5. Write output files
+    // 6. Write output files
     output::write_text(&text_path, &screen)?;
     output::write_ranges(&ranges_path, &screen)?;
     output::write_init_kak(&init_path, &screen, &window_id, tmp_dir.path(), &ranges_path)?;
 
-    // 6. Disable TempDir auto-deletion (Kakoune hook will clean up)
+    // 7. Disable TempDir auto-deletion (Kakoune hook will clean up)
     let tmp_path = tmp_dir.keep();
 
-    // 7. exec kak to replace this process
+    // 8. exec kak to replace this process
     use std::os::unix::process::CommandExt;
     let err = std::process::Command::new("kak")
         .env("KAKOUNE_SCROLLBACK", "1")

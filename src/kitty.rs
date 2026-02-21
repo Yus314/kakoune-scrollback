@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
 
+use crate::palette;
+
 pub struct KittyPipeData {
     pub cursor_x: usize,
     pub cursor_y: usize,
@@ -65,6 +67,21 @@ pub fn window_id() -> Result<String> {
         .nth(1)
         .context("missing target window ID argument (update your kitty.conf — see README)")?;
     parse_window_id(&val)
+}
+
+/// Query the running Kitty instance for its color palette.
+/// Falls back to DEFAULT_PALETTE if the command fails.
+pub fn get_palette(window_id: &str) -> [u8; 48] {
+    let output = std::process::Command::new("kitty")
+        .args(["@", "get-colors", "--match", &format!("id:{window_id}")])
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            palette::parse_kitty_colors(&text)
+        }
+        _ => palette::DEFAULT_PALETTE,
+    }
 }
 
 #[cfg(test)]

@@ -20,6 +20,52 @@ pub const DEFAULT_PALETTE: [u8; 48] = [
     0xFF, 0xFF, 0xFF, // 15: Bright White
 ];
 
+/// Parse `kitty @ get-colors` output into a 48-byte ANSI palette.
+///
+/// Expects lines like `colorN #RRGGBB` (or `colorN #RGB`).
+/// Missing colors keep their DEFAULT_PALETTE values.
+pub fn parse_kitty_colors(output: &str) -> [u8; 48] {
+    let mut palette = DEFAULT_PALETTE;
+    for line in output.lines() {
+        let line = line.trim();
+        // Match lines like "color0 #000000" or "color15 #ffffff"
+        let Some(rest) = line.strip_prefix("color") else {
+            continue;
+        };
+        let Some((idx_str, hex_str)) = rest.split_once(|c: char| c.is_ascii_whitespace()) else {
+            continue;
+        };
+        let Ok(idx) = idx_str.parse::<u8>() else {
+            continue;
+        };
+        if idx > 15 {
+            continue;
+        }
+        let hex_str = hex_str.trim().trim_start_matches('#');
+        let (r, g, b) = match hex_str.len() {
+            6 => {
+                let Ok(r) = u8::from_str_radix(&hex_str[0..2], 16) else { continue };
+                let Ok(g) = u8::from_str_radix(&hex_str[2..4], 16) else { continue };
+                let Ok(b) = u8::from_str_radix(&hex_str[4..6], 16) else { continue };
+                (r, g, b)
+            }
+            3 => {
+                // #RGB shorthand: each digit doubled (e.g. #F0A → #FF00AA)
+                let Ok(r) = u8::from_str_radix(&hex_str[0..1], 16) else { continue };
+                let Ok(g) = u8::from_str_radix(&hex_str[1..2], 16) else { continue };
+                let Ok(b) = u8::from_str_radix(&hex_str[2..3], 16) else { continue };
+                (r * 17, g * 17, b * 17)
+            }
+            _ => continue,
+        };
+        let base = idx as usize * 3;
+        palette[base] = r;
+        palette[base + 1] = g;
+        palette[base + 2] = b;
+    }
+    palette
+}
+
 /// Convert indexed color (16-231) from 6x6x6 cube to RGB
 pub fn idx_to_rgb(idx: u8) -> (u8, u8, u8) {
     if idx < 16 {
@@ -169,5 +215,80 @@ mod tests {
     fn idx_to_rgb_mid_cube_color() {
         let (r, g, b) = idx_to_rgb(67);
         assert_eq!((r, g, b), (95, 135, 175));
+    }
+
+    // --- parse_kitty_colors tests ---
+
+    #[test]
+    fn parse_kitty_colors_full() {
+        let output = "\
+color0  #1a1b26
+color1  #f7768e
+color2  #9ece6a
+color3  #e0af68
+color4  #7aa2f7
+color5  #bb9af7
+color6  #7dcfff
+color7  #a9b1d6
+color8  #414868
+color9  #f7768e
+color10 #9ece6a
+color11 #e0af68
+color12 #7aa2f7
+color13 #bb9af7
+color14 #7dcfff
+color15 #c0caf5
+";
+        let palette = parse_kitty_colors(output);
+        // color0 = #1a1b26
+        assert_eq!(palette[0], 0x1a);
+        assert_eq!(palette[1], 0x1b);
+        assert_eq!(palette[2], 0x26);
+        // color15 = #c0caf5
+        assert_eq!(palette[45], 0xc0);
+        assert_eq!(palette[46], 0xca);
+        assert_eq!(palette[47], 0xf5);
+    }
+
+    #[test]
+    fn parse_kitty_colors_partial() {
+        // Only color1 is overridden; others stay at defaults
+        let output = "color1 #aabbcc\n";
+        let palette = parse_kitty_colors(output);
+        assert_eq!(palette[3], 0xaa);
+        assert_eq!(palette[4], 0xbb);
+        assert_eq!(palette[5], 0xcc);
+        // color0 stays at default
+        assert_eq!(palette[0..3], DEFAULT_PALETTE[0..3]);
+    }
+
+    #[test]
+    fn parse_kitty_colors_empty() {
+        let palette = parse_kitty_colors("");
+        assert_eq!(palette, DEFAULT_PALETTE);
+    }
+
+    #[test]
+    fn parse_kitty_colors_ignores_non_color_lines() {
+        let output = "\
+background #1a1b26
+foreground #c0caf5
+cursor     #c0caf5
+color0     #000000
+";
+        let palette = parse_kitty_colors(output);
+        // Only color0 should be parsed
+        assert_eq!(palette[0], 0x00);
+        assert_eq!(palette[1], 0x00);
+        assert_eq!(palette[2], 0x00);
+        // Rest stays default
+        assert_eq!(palette[3..], DEFAULT_PALETTE[3..]);
+    }
+
+    #[test]
+    fn parse_kitty_colors_ignores_high_indices() {
+        let output = "color16 #112233\ncolor255 #aabbcc\n";
+        let palette = parse_kitty_colors(output);
+        assert_eq!(palette, DEFAULT_PALETTE);
     }
 }
