@@ -9,9 +9,6 @@ declare-option -hidden str scrollback_tmp_dir ''
 # Paste window initial value
 declare-option -hidden str scrollback_compose_init ''
 
-# User-configurable options
-declare-option str scrollback_max_lines '5000'
-
 # --- Keymaps ---
 
 define-command -hidden kakoune-scrollback-setup-keymaps %{

@@ -75,6 +75,7 @@ map ctrl+shift+g launch --type=overlay \
 
 ## Configuration
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `scrollback_max_lines` | `5000` | Maximum number of scrollback lines to process |
+The maximum number of scrollback lines to process can be set via the
+`KAKOUNE_SCROLLBACK_MAX_LINES` environment variable (default: `200000`).
+To change it, add `--env KAKOUNE_SCROLLBACK_MAX_LINES=5000` to the `launch`
+command in your `kitty.conf`.
