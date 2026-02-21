@@ -1,7 +1,6 @@
 use anyhow::{bail, Context, Result};
 
 pub struct KittyPipeData {
-    pub scrolled_by: usize,
     pub cursor_x: usize,
     pub cursor_y: usize,
     pub lines: u16,
@@ -9,7 +8,7 @@ pub struct KittyPipeData {
 }
 
 /// Pure function: parse from string (separated for testability)
-/// Format: "scrolled_by:cursor_x,cursor_y:lines,columns"
+/// Format: "scrolled_by[,cursor_x]:cursor_y:lines,columns"
 pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
     let parts: Vec<&str> = s.split(':').collect();
     if parts.len() != 3 {
@@ -17,11 +16,14 @@ pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
     }
 
     let first: Vec<&str> = parts[0].split(',').collect();
-    let (scrolled_by_str, cursor_x_str) = match first.len() {
+    let (_scrolled_by_str, cursor_x_str) = match first.len() {
         1 => (first[0], "0"),
         2 => (first[0], first[1]),
         _ => bail!("KITTY_PIPE_DATA: invalid first part '{}'", parts[0]),
     };
+
+    // Validate scrolled_by is numeric even though we don't use the value
+    let _scrolled_by: usize = _scrolled_by_str.parse().context("KITTY_PIPE_DATA: invalid scrolled_by")?;
 
     let cursor_y: usize = parts[1].split(',').next()
         .context("KITTY_PIPE_DATA: missing cursor_y")?
@@ -33,7 +35,6 @@ pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
     }
 
     Ok(KittyPipeData {
-        scrolled_by: scrolled_by_str.parse().context("KITTY_PIPE_DATA: invalid scrolled_by")?,
         cursor_x: cursor_x_str.parse().context("KITTY_PIPE_DATA: invalid cursor_x")?,
         cursor_y,
         lines: last[0].parse().context("KITTY_PIPE_DATA: invalid lines")?,
@@ -73,7 +74,6 @@ mod tests {
     #[test]
     fn parse_pipe_data_valid() {
         let data = parse_pipe_data_str("42,5:23:50,120").unwrap();
-        assert_eq!(data.scrolled_by, 42);
         assert_eq!(data.cursor_x, 5);
         assert_eq!(data.cursor_y, 23);
         assert_eq!(data.lines, 50);
@@ -83,7 +83,6 @@ mod tests {
     #[test]
     fn parse_pipe_data_zeros() {
         let data = parse_pipe_data_str("0,0:0:24,80").unwrap();
-        assert_eq!(data.scrolled_by, 0);
         assert_eq!(data.cursor_x, 0);
         assert_eq!(data.cursor_y, 0);
         assert_eq!(data.lines, 24);
@@ -92,9 +91,7 @@ mod tests {
 
     #[test]
     fn parse_pipe_data_no_scroll() {
-        // When not scrolled, scrolled_by might be just a number without comma
         let data = parse_pipe_data_str("0,3:10:24,80").unwrap();
-        assert_eq!(data.scrolled_by, 0);
         assert_eq!(data.cursor_x, 3);
         assert_eq!(data.cursor_y, 10);
     }

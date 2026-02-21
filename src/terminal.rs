@@ -56,7 +56,7 @@ pub fn process_bytes(pipe_data: &KittyPipeData, data: &[u8]) -> Result<Processed
     let mut cursor = CursorPosition { line: 1, col: 1 };
 
     // The cursor in the output buffer is at line (total_sb + cursor_y + 1), 1-based
-    let cursor_output_line = total_sb + pipe_data.cursor_y as usize + 1;
+    let cursor_output_line = total_sb + pipe_data.cursor_y + 1;
 
     if total_sb > 0 {
         // Read initial screen_rows lines from the max scrollback offset
@@ -98,7 +98,7 @@ pub fn process_bytes(pipe_data: &KittyPipeData, data: &[u8]) -> Result<Processed
     }
 
     // Trim trailing empty lines
-    while lines.last().map_or(false, |l| l.text.is_empty() && l.spans.is_empty()) {
+    while lines.last().is_some_and(|l| l.text.is_empty() && l.spans.is_empty()) {
         lines.pop();
     }
 
@@ -241,7 +241,6 @@ mod tests {
 
     fn default_pipe_data() -> KittyPipeData {
         KittyPipeData {
-            scrolled_by: 0,
             cursor_x: 0,
             cursor_y: 0,
             lines: 24,
@@ -319,7 +318,6 @@ mod tests {
     fn cursor_position_simple() {
         let input = b"line1\r\nline2\r\nline3";
         let pd = KittyPipeData {
-            scrolled_by: 0,
             cursor_x: 3,
             cursor_y: 2,
             lines: 24,
@@ -347,7 +345,6 @@ mod tests {
             input.extend_from_slice(format!("line {i}\r\n").as_bytes());
         }
         let pd = KittyPipeData {
-            scrolled_by: 0,
             cursor_x: 0,
             cursor_y: 0,
             lines: 10,
@@ -369,7 +366,6 @@ mod tests {
             input.extend_from_slice(format!("line {i}\r\n").as_bytes());
         }
         let pd = KittyPipeData {
-            scrolled_by: 0,
             cursor_x: 0,
             cursor_y: 5,
             lines: 10,
@@ -385,7 +381,6 @@ mod tests {
     fn cursor_clamped_on_trimmed_empty_lines() {
         let input = b"Hello";
         let pd = KittyPipeData {
-            scrolled_by: 0,
             cursor_x: 0,
             cursor_y: 23,
             lines: 24,
@@ -430,7 +425,6 @@ mod tests {
         // Red "Hi" followed by red trailing spaces that get trimmed
         let input = b"\x1b[31mHi   \x1b[0m";
         let pd = KittyPipeData {
-            scrolled_by: 0,
             cursor_x: 0,
             cursor_y: 0,
             lines: 24,
@@ -501,7 +495,6 @@ mod tests {
     fn cursor_on_wide_character() {
         let input = "日test".as_bytes();
         let pd = KittyPipeData {
-            scrolled_by: 0,
             cursor_x: 2,
             cursor_y: 0,
             lines: 24,
@@ -523,7 +516,6 @@ mod tests {
 
         // Cursor at first visible line (cursor_y:0)
         let pd = KittyPipeData {
-            scrolled_by: 0,
             cursor_x: 0,
             cursor_y: 0,
             lines: 10,
@@ -536,7 +528,6 @@ mod tests {
 
         // Cursor at last visible line (cursor_y:9)
         let pd = KittyPipeData {
-            scrolled_by: 0,
             cursor_x: 0,
             cursor_y: 9,
             lines: 10,

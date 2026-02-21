@@ -302,7 +302,6 @@ mod tests {
 
         let input = b"\x1b[31mHello\x1b[0m World";
         let pd = KittyPipeData {
-            scrolled_by: 0,
             cursor_x: 0,
             cursor_y: 0,
             lines: 24,
