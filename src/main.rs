@@ -63,7 +63,8 @@ fn run() -> Result<()> {
     let window_id = kitty::window_id()?;
     let palette = kitty::get_palette(window_id);
     let mut stdin_data = Vec::new();
-    std::io::stdin().take(MAX_STDIN_BYTES)
+    std::io::stdin()
+        .take(MAX_STDIN_BYTES)
         .read_to_end(&mut stdin_data)?;
     anyhow::ensure!(
         (stdin_data.len() as u64) < MAX_STDIN_BYTES,
@@ -125,11 +126,10 @@ mod tests {
     fn check_reentry_blocks() {
         let err = check_reentry(Some("1"));
         assert!(err.is_err());
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("Already inside kakoune-scrollback")
-        );
+        assert!(err
+            .unwrap_err()
+            .to_string()
+            .contains("Already inside kakoune-scrollback"));
     }
 
     #[test]
@@ -151,12 +151,7 @@ mod tests {
         assert!(ranges_path.exists());
 
         // tmpdir has ksb- prefix
-        let dir_name = tmp_dir
-            .path()
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let dir_name = tmp_dir.path().file_name().unwrap().to_str().unwrap();
         assert!(
             dir_name.starts_with("ksb-"),
             "tmpdir should have ksb- prefix, got: {dir_name}"
@@ -186,8 +181,12 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let (text, ranges, init, _td) =
-            run_and_read(&pd, wid("42"), &palette::DEFAULT_PALETTE, b"line one\r\nline two");
+        let (text, ranges, init, _td) = run_and_read(
+            &pd,
+            wid("42"),
+            &palette::DEFAULT_PALETTE,
+            b"line one\r\nline two",
+        );
 
         assert_eq!(text, "line one\nline two\n");
         // No ANSI colors → ranges should be empty
@@ -258,8 +257,7 @@ mod tests {
     #[test]
     fn pipeline_empty_input() {
         let pd = default_pipe_data();
-        let (text, ranges, init, _td) =
-            run_and_read(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"");
+        let (text, ranges, init, _td) = run_and_read(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"");
 
         // Empty input → text is empty, ranges empty, but init still has structure
         assert!(text.is_empty() || text == "\n");

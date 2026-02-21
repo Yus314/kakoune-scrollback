@@ -24,7 +24,11 @@ pub struct Span {
 }
 
 /// Process from byte slice directly
-pub fn process_bytes(pipe_data: &KittyPipeData, data: &[u8], palette: &[u8; 48]) -> ProcessedScreen {
+pub fn process_bytes(
+    pipe_data: &KittyPipeData,
+    data: &[u8],
+    palette: &[u8; 48],
+) -> ProcessedScreen {
     let max_scrollback: usize = std::env::var("KAKOUNE_SCROLLBACK_MAX_LINES")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -51,17 +55,36 @@ pub fn process_bytes(pipe_data: &KittyPipeData, data: &[u8], palette: &[u8; 48])
     // Read initial screen rows from the max scrollback offset
     screen.set_scrollback(total_sb);
     for row in 0..rows {
-        push_row(screen, row, pipe_data, cursor_output_line, &mut lines, &mut cursor, palette);
+        push_row(
+            screen,
+            row,
+            pipe_data,
+            cursor_output_line,
+            &mut lines,
+            &mut cursor,
+            palette,
+        );
     }
 
     // Read one new line at the bottom for each offset decrease
     for offset in (0..total_sb).rev() {
         screen.set_scrollback(offset);
-        push_row(screen, rows - 1, pipe_data, cursor_output_line, &mut lines, &mut cursor, palette);
+        push_row(
+            screen,
+            rows - 1,
+            pipe_data,
+            cursor_output_line,
+            &mut lines,
+            &mut cursor,
+            palette,
+        );
     }
 
     // Trim trailing empty lines
-    while lines.last().is_some_and(|l| l.text.is_empty() && l.spans.is_empty()) {
+    while lines
+        .last()
+        .is_some_and(|l| l.text.is_empty() && l.spans.is_empty())
+    {
         lines.pop();
     }
 
@@ -85,7 +108,15 @@ fn push_row(
 ) {
     let line_idx = lines.len();
     let is_cursor_line = line_idx + 1 == cursor_output_line;
-    let pline = process_row(screen, row, pipe_data.columns, pipe_data, is_cursor_line, cursor, palette);
+    let pline = process_row(
+        screen,
+        row,
+        pipe_data.columns,
+        pipe_data,
+        is_cursor_line,
+        cursor,
+        palette,
+    );
     lines.push(pline);
     if is_cursor_line {
         cursor.line = line_idx + 1;
@@ -107,7 +138,9 @@ fn process_row(
     let mut span_start_byte: usize = 1; // 1-based
 
     for col in 0..cols {
-        let Some(cell) = screen.cell(row, col) else { break };
+        let Some(cell) = screen.cell(row, col) else {
+            break;
+        };
 
         // Skip wide continuation cells
         if cell.is_wide_continuation() {

@@ -24,9 +24,11 @@ pub struct KittyPipeData {
 /// Pure function: parse from string (separated for testability)
 /// Format: `scrolled_by[,cursor_x]:cursor_y:lines,columns`
 pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
-    let (part0, rest) = s.split_once(':')
+    let (part0, rest) = s
+        .split_once(':')
         .context("KITTY_PIPE_DATA: expected 3 colon-separated parts")?;
-    let (part1, part2) = rest.split_once(':')
+    let (part1, part2) = rest
+        .split_once(':')
         .context("KITTY_PIPE_DATA: expected 3 colon-separated parts")?;
     if part2.contains(':') {
         bail!("KITTY_PIPE_DATA: expected 3 colon-separated parts");
@@ -43,37 +45,50 @@ pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
     };
 
     // Validate scrolled_by is numeric even though we don't use the value
-    let _scrolled_by: usize = scrolled_by_str.parse().context("KITTY_PIPE_DATA: invalid scrolled_by")?;
+    let _scrolled_by: usize = scrolled_by_str
+        .parse()
+        .context("KITTY_PIPE_DATA: invalid scrolled_by")?;
 
-    let cursor_y: usize = part1.split(',').next()
+    let cursor_y: usize = part1
+        .split(',')
+        .next()
         .context("KITTY_PIPE_DATA: missing cursor_y")?
-        .parse().context("KITTY_PIPE_DATA: invalid cursor_y")?;
+        .parse()
+        .context("KITTY_PIPE_DATA: invalid cursor_y")?;
 
-    let (lines_str, columns_str) = part2.split_once(',')
-        .with_context(|| format!("KITTY_PIPE_DATA: expected 'lines,columns' in third part, got '{part2}'"))?;
+    let (lines_str, columns_str) = part2.split_once(',').with_context(|| {
+        format!("KITTY_PIPE_DATA: expected 'lines,columns' in third part, got '{part2}'")
+    })?;
     if columns_str.contains(',') {
         bail!("KITTY_PIPE_DATA: expected 'lines,columns' in third part, got '{part2}'");
     }
 
     Ok(KittyPipeData {
-        cursor_x: cursor_x_str.parse().context("KITTY_PIPE_DATA: invalid cursor_x")?,
+        cursor_x: cursor_x_str
+            .parse()
+            .context("KITTY_PIPE_DATA: invalid cursor_x")?,
         cursor_y,
-        lines: lines_str.parse().context("KITTY_PIPE_DATA: invalid lines")?,
-        columns: columns_str.parse().context("KITTY_PIPE_DATA: invalid columns")?,
+        lines: lines_str
+            .parse()
+            .context("KITTY_PIPE_DATA: invalid lines")?,
+        columns: columns_str
+            .parse()
+            .context("KITTY_PIPE_DATA: invalid columns")?,
     })
 }
 
 /// Read `KITTY_PIPE_DATA` environment variable and delegate to `parse_pipe_data_str`
 pub fn parse_pipe_data() -> Result<KittyPipeData> {
-    let val = std::env::var("KITTY_PIPE_DATA")
-        .context("KITTY_PIPE_DATA environment variable not set")?;
+    let val =
+        std::env::var("KITTY_PIPE_DATA").context("KITTY_PIPE_DATA environment variable not set")?;
     parse_pipe_data_str(&val)
 }
 
 /// Pure function: validate and parse a kitty window ID string (separated for testability)
 pub fn parse_window_id(s: &str) -> Result<WindowId> {
-    let id: u32 = s.parse()
-        .with_context(|| format!("invalid kitty window ID '{s}' — expected a number (check your kitty.conf)"))?;
+    let id: u32 = s.parse().with_context(|| {
+        format!("invalid kitty window ID '{s}' — expected a number (check your kitty.conf)")
+    })?;
     if id == 0 {
         bail!("invalid kitty window ID '0' — window IDs start at 1");
     }

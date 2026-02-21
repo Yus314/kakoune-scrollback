@@ -44,16 +44,28 @@ pub fn parse_kitty_colors(output: &str) -> [u8; 48] {
         let hex_str = hex_str.trim().trim_start_matches('#');
         let (r, g, b) = match hex_str.len() {
             6 => {
-                let Ok(r) = u8::from_str_radix(&hex_str[0..2], 16) else { continue };
-                let Ok(g) = u8::from_str_radix(&hex_str[2..4], 16) else { continue };
-                let Ok(b) = u8::from_str_radix(&hex_str[4..6], 16) else { continue };
+                let Ok(r) = u8::from_str_radix(&hex_str[0..2], 16) else {
+                    continue;
+                };
+                let Ok(g) = u8::from_str_radix(&hex_str[2..4], 16) else {
+                    continue;
+                };
+                let Ok(b) = u8::from_str_radix(&hex_str[4..6], 16) else {
+                    continue;
+                };
                 (r, g, b)
             }
             3 => {
                 // #RGB shorthand: each digit doubled (e.g. #F0A → #FF00AA)
-                let Ok(r) = u8::from_str_radix(&hex_str[0..1], 16) else { continue };
-                let Ok(g) = u8::from_str_radix(&hex_str[1..2], 16) else { continue };
-                let Ok(b) = u8::from_str_radix(&hex_str[2..3], 16) else { continue };
+                let Ok(r) = u8::from_str_radix(&hex_str[0..1], 16) else {
+                    continue;
+                };
+                let Ok(g) = u8::from_str_radix(&hex_str[1..2], 16) else {
+                    continue;
+                };
+                let Ok(b) = u8::from_str_radix(&hex_str[2..3], 16) else {
+                    continue;
+                };
                 (r * 17, g * 17, b * 17)
             }
             _ => continue,

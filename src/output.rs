@@ -106,10 +106,7 @@ pub fn write_init_kak(
         script,
         "declare-option -hidden range-specs scrollback_colors"
     )?;
-    writeln!(
-        script,
-        "add-highlighter buffer/ ranges scrollback_colors"
-    )?;
+    writeln!(script, "add-highlighter buffer/ ranges scrollback_colors")?;
     writeln!(script, "source '{ranges_path_str}'")?;
     writeln!(script, "update-option buffer scrollback_colors")?;
     writeln!(script)?;
