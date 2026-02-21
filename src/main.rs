@@ -22,23 +22,21 @@ fn wait_for_keypress() {
     }
 }
 
-fn run() -> Result<()> {
-    // 1. Re-entry prevention
-    if env::var("KAKOUNE_SCROLLBACK").is_ok() {
+fn check_reentry(env_val: Option<String>) -> Result<()> {
+    if env_val.is_some() {
         bail!("Already inside kakoune-scrollback");
     }
+    Ok(())
+}
 
-    // 2. Parse environment variables
-    let pipe_data = kitty::parse_pipe_data()?;
-    let window_id = kitty::window_id()?;
+fn run_core(
+    pipe_data: &kitty::KittyPipeData,
+    window_id: &str,
+    palette: &[u8; 48],
+    stdin_data: &[u8],
+) -> Result<(tempfile::TempDir, std::path::PathBuf, std::path::PathBuf)> {
+    let screen = terminal::process_bytes(pipe_data, stdin_data, palette)?;
 
-    // 3. Query Kitty for palette colors (falls back to defaults)
-    let palette = kitty::get_palette(&window_id);
-
-    // 4. Read stdin + vt100 processing (cursor position calculated in Rust)
-    let screen = terminal::process_stdin(&pipe_data, &palette)?;
-
-    // 5. Create temporary directory
     let tmp_dir = tempfile::Builder::new()
         .prefix("ksb-")
         .tempdir()
@@ -47,15 +45,26 @@ fn run() -> Result<()> {
     let ranges_path = tmp_dir.path().join("ranges.kak");
     let init_path = tmp_dir.path().join("init.kak");
 
-    // 6. Write output files
     output::write_text(&text_path, &screen)?;
     output::write_ranges(&ranges_path, &screen)?;
-    output::write_init_kak(&init_path, &screen, &window_id, tmp_dir.path(), &ranges_path)?;
+    output::write_init_kak(&init_path, &screen, window_id, tmp_dir.path(), &ranges_path)?;
 
-    // 7. Disable TempDir auto-deletion (Kakoune hook will clean up)
+    Ok((tmp_dir, text_path, init_path))
+}
+
+fn run() -> Result<()> {
+    check_reentry(env::var("KAKOUNE_SCROLLBACK").ok())?;
+
+    let pipe_data = kitty::parse_pipe_data()?;
+    let window_id = kitty::window_id()?;
+    let palette = kitty::get_palette(&window_id);
+    let mut stdin_data = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::stdin(), &mut stdin_data)?;
+
+    let (tmp_dir, text_path, init_path) = run_core(&pipe_data, &window_id, &palette, &stdin_data)?;
+
     let tmp_path = tmp_dir.keep();
 
-    // 8. exec kak to replace this process
     use std::os::unix::process::CommandExt;
     let err = std::process::Command::new("kak")
         .env("KAKOUNE_SCROLLBACK", "1")
@@ -64,7 +73,237 @@ fn run() -> Result<()> {
         .arg(&text_path)
         .exec();
 
-    // exec failed — clean up and report
     let _ = std::fs::remove_dir_all(&tmp_path);
     Err(err).context("failed to exec kak")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kitty::KittyPipeData;
+
+    fn default_pipe_data() -> KittyPipeData {
+        KittyPipeData {
+            cursor_x: 0,
+            cursor_y: 0,
+            lines: 24,
+            columns: 80,
+        }
+    }
+
+    /// Run `run_core()`, read back the 3 output files, return their contents and the TempDir.
+    fn run_and_read(
+        pipe_data: &KittyPipeData,
+        window_id: &str,
+        palette: &[u8; 48],
+        stdin_data: &[u8],
+    ) -> (String, String, String, tempfile::TempDir) {
+        let (tmp_dir, text_path, init_path) =
+            run_core(pipe_data, window_id, palette, stdin_data).unwrap();
+        let ranges_path = tmp_dir.path().join("ranges.kak");
+        let text = std::fs::read_to_string(&text_path).unwrap();
+        let ranges = std::fs::read_to_string(&ranges_path).unwrap();
+        let init = std::fs::read_to_string(&init_path).unwrap();
+        (text, ranges, init, tmp_dir)
+    }
+
+    // --- 1. check_reentry ---
+
+    #[test]
+    fn check_reentry_blocks() {
+        let err = check_reentry(Some("1".into()));
+        assert!(err.is_err());
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("Already inside kakoune-scrollback")
+        );
+    }
+
+    #[test]
+    fn check_reentry_allows() {
+        assert!(check_reentry(None).is_ok());
+    }
+
+    // --- 2. tmpdir ---
+
+    #[test]
+    fn pipeline_creates_expected_files() {
+        let pd = default_pipe_data();
+        let (tmp_dir, text_path, init_path) =
+            run_core(&pd, "1", &palette::DEFAULT_PALETTE, b"hello").unwrap();
+        let ranges_path = tmp_dir.path().join("ranges.kak");
+
+        assert!(text_path.exists());
+        assert!(init_path.exists());
+        assert!(ranges_path.exists());
+
+        // tmpdir has ksb- prefix
+        let dir_name = tmp_dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            dir_name.starts_with("ksb-"),
+            "tmpdir should have ksb- prefix, got: {dir_name}"
+        );
+    }
+
+    #[test]
+    fn pipeline_tmpdir_not_kept() {
+        let pd = default_pipe_data();
+        let (tmp_dir, _, _) = run_core(&pd, "1", &palette::DEFAULT_PALETTE, b"hello").unwrap();
+        let path = tmp_dir.path().to_path_buf();
+        assert!(path.exists());
+        drop(tmp_dir);
+        assert!(
+            !path.exists(),
+            "TempDir should be removed on drop (run_core must not call keep())"
+        );
+    }
+
+    // --- 3. end-to-end pipeline ---
+
+    #[test]
+    fn pipeline_plain_text_e2e() {
+        let pd = KittyPipeData {
+            cursor_x: 3,
+            cursor_y: 1,
+            lines: 24,
+            columns: 80,
+        };
+        let (text, ranges, init, _td) =
+            run_and_read(&pd, "42", &palette::DEFAULT_PALETTE, b"line one\r\nline two");
+
+        assert_eq!(text, "line one\nline two\n");
+        // No ANSI colors → ranges should be empty
+        assert!(ranges.is_empty());
+        // init should contain cursor position and window_id
+        assert!(init.contains("select 2.4,2.4"));
+        assert!(init.contains("scrollback_kitty_window_id '42'"));
+    }
+
+    #[test]
+    fn pipeline_colored_e2e() {
+        let pd = KittyPipeData {
+            cursor_x: 0,
+            cursor_y: 0,
+            lines: 24,
+            columns: 80,
+        };
+        let input = b"\x1b[31mRed\x1b[0m Normal";
+        let (text, ranges, init, _td) =
+            run_and_read(&pd, "1", &palette::DEFAULT_PALETTE, input);
+
+        assert_eq!(text, "Red Normal\n");
+        // ranges should contain a face for the red text
+        assert!(ranges.contains("rgb:"));
+        assert!(ranges.contains("set-option buffer scrollback_colors"));
+        // init should have cursor select
+        assert!(init.contains("select 1.1,1.1"));
+    }
+
+    #[test]
+    fn pipeline_scrollback_cursor_e2e() {
+        let mut input = Vec::new();
+        for i in 0..30 {
+            input.extend_from_slice(format!("line {i}\r\n").as_bytes());
+        }
+        let pd = KittyPipeData {
+            cursor_x: 0,
+            cursor_y: 5,
+            lines: 10,
+            columns: 80,
+        };
+        let (_text, _ranges, init, _td) =
+            run_and_read(&pd, "1", &palette::DEFAULT_PALETTE, &input);
+
+        // total_sb = 21, cursor_output_line = 21 + 5 + 1 = 27
+        assert!(init.contains("select 27.1,27.1"));
+    }
+
+    #[test]
+    fn pipeline_custom_palette_e2e() {
+        let mut custom_palette = palette::DEFAULT_PALETTE;
+        // Override color 1 (red) to #AABBCC
+        custom_palette[3] = 0xAA;
+        custom_palette[4] = 0xBB;
+        custom_palette[5] = 0xCC;
+
+        let pd = default_pipe_data();
+        let input = b"\x1b[31mColored\x1b[0m";
+        let (_text, ranges, _init, _td) = run_and_read(&pd, "1", &custom_palette, input);
+
+        // SGR 31 = color index 1 → should resolve to our custom #AABBCC
+        assert!(
+            ranges.contains("rgb:AABBCC"),
+            "Custom palette color should appear in ranges, got: {ranges}"
+        );
+    }
+
+    #[test]
+    fn pipeline_empty_input() {
+        let pd = default_pipe_data();
+        let (text, ranges, init, _td) =
+            run_and_read(&pd, "1", &palette::DEFAULT_PALETTE, b"");
+
+        // Empty input → text is empty, ranges empty, but init still has structure
+        assert!(text.is_empty() || text == "\n");
+        assert!(ranges.is_empty());
+        assert!(init.contains("scrollback_kitty_window_id"));
+        assert!(init.contains("select"));
+    }
+
+    // --- 4. init.kak verification ---
+
+    #[test]
+    fn pipeline_init_references_actual_tmpdir() {
+        let pd = default_pipe_data();
+        let (tmp_dir, _, init_path) =
+            run_core(&pd, "1", &palette::DEFAULT_PALETTE, b"hello").unwrap();
+        let init = std::fs::read_to_string(&init_path).unwrap();
+        let tmp_dir_str = tmp_dir.path().to_str().unwrap();
+
+        // The rm -rf cleanup command should reference the actual tmpdir
+        assert!(
+            init.contains(&format!("rm -rf '{tmp_dir_str}'")),
+            "init.kak should reference tmpdir in rm -rf, got: {init}"
+        );
+    }
+
+    #[test]
+    fn pipeline_init_window_id_propagated() {
+        let pd = default_pipe_data();
+        let (_text, _ranges, init, _td) =
+            run_and_read(&pd, "999", &palette::DEFAULT_PALETTE, b"test");
+
+        assert!(
+            init.contains("scrollback_kitty_window_id '999'"),
+            "window_id should be propagated to init.kak, got: {init}"
+        );
+    }
+
+    // --- 5. wide char ---
+
+    #[test]
+    fn pipeline_wide_char_cursor_e2e() {
+        // "日本語" = 9 bytes (3 each), cursor at col 6 (after 3 wide chars = 6 columns)
+        let input = "日本語test".as_bytes();
+        let pd = KittyPipeData {
+            cursor_x: 6,
+            cursor_y: 0,
+            lines: 24,
+            columns: 80,
+        };
+        let (_text, _ranges, init, _td) =
+            run_and_read(&pd, "1", &palette::DEFAULT_PALETTE, input);
+
+        // "日本語" = 9 bytes, cursor_x:6 lands on 't', byte offset = 9 + 1 = 10 (1-based)
+        assert!(
+            init.contains("select 1.10,1.10"),
+            "Wide char cursor byte offset should be correct, got: {init}"
+        );
+    }
 }

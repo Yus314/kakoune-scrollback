@@ -1,5 +1,4 @@
 use anyhow::Result;
-use std::io::Read;
 
 use crate::kitty::KittyPipeData;
 use crate::palette;
@@ -26,14 +25,7 @@ pub struct Span {
     pub face: String,      // Kakoune face string (e.g. "rgb:FF0000,default+bi")
 }
 
-/// Read ANSI data from stdin, process with vt100, return all lines
-pub fn process_stdin(pipe_data: &KittyPipeData, palette: &[u8; 48]) -> Result<ProcessedScreen> {
-    let mut data = Vec::new();
-    std::io::stdin().read_to_end(&mut data)?;
-    process_bytes(pipe_data, &data, palette)
-}
-
-/// Process from byte slice directly (for testing)
+/// Process from byte slice directly
 pub fn process_bytes(pipe_data: &KittyPipeData, data: &[u8], palette: &[u8; 48]) -> Result<ProcessedScreen> {
     let max_scrollback: usize = std::env::var("KAKOUNE_SCROLLBACK_MAX_LINES")
         .ok()
