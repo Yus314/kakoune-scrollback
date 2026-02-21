@@ -20,6 +20,33 @@ define-command -hidden kakoune-scrollback-setup-keymaps %{
     map buffer normal ?     ':kakoune-scrollback-help<ret>'
 }
 
+# --- Kitty send helpers ---
+
+define-command -hidden kakoune-scrollback-send-to-kitty %{
+    evaluate-commands %sh{
+        err=$(printf '%s' "$kak_selection" | kitty @ send-text \
+            --match="id:${kak_opt_scrollback_kitty_window_id}" \
+            --bracketed-paste=enable \
+            --stdin 2>&1)
+        if [ $? -ne 0 ]; then
+            err=$(printf '%s' "$err" | sed "s/'/''/g")
+            echo "fail 'send-text failed: ${err}'"
+        fi
+    }
+}
+
+define-command -hidden kakoune-scrollback-execute-in-kitty %{
+    evaluate-commands %sh{
+        err=$(printf '\r' | kitty @ send-text \
+            --match="id:${kak_opt_scrollback_kitty_window_id}" \
+            --stdin 2>&1)
+        if [ $? -ne 0 ]; then
+            err=$(printf '%s' "$err" | sed "s/'/''/g")
+            echo "fail 'send-text failed: ${err}'"
+        fi
+    }
+}
+
 # --- Core commands ---
 
 define-command kakoune-scrollback-quit %{
@@ -35,25 +62,13 @@ define-command kakoune-scrollback-yank %{
 }
 
 define-command kakoune-scrollback-paste %{
-    evaluate-commands %sh{
-        printf '%s' "$kak_selection" | kitty @ send-text \
-            --match="id:${kak_opt_scrollback_kitty_window_id}" \
-            --bracketed-paste=enable \
-            --stdin
-    }
+    kakoune-scrollback-send-to-kitty
     kakoune-scrollback-quit
 }
 
 define-command kakoune-scrollback-execute %{
-    evaluate-commands %sh{
-        printf '%s' "$kak_selection" | kitty @ send-text \
-            --match="id:${kak_opt_scrollback_kitty_window_id}" \
-            --bracketed-paste=enable \
-            --stdin
-        printf '\r' | kitty @ send-text \
-            --match="id:${kak_opt_scrollback_kitty_window_id}" \
-            --stdin
-    }
+    kakoune-scrollback-send-to-kitty
+    kakoune-scrollback-execute-in-kitty
     kakoune-scrollback-quit
 }
 
@@ -96,28 +111,16 @@ define-command kakoune-scrollback-edit %{
 }
 
 define-command -hidden kakoune-scrollback-submit %{
-    execute-keys '%y'
-    evaluate-commands %sh{
-        printf '%s' "$kak_reg_dquote" | kitty @ send-text \
-            --match="id:${kak_opt_scrollback_kitty_window_id}" \
-            --bracketed-paste=enable \
-            --stdin
-    }
+    execute-keys '%'
+    kakoune-scrollback-send-to-kitty
     delete-buffer *compose*
     quit
 }
 
 define-command -hidden kakoune-scrollback-submit-exec %{
-    execute-keys '%y'
-    evaluate-commands %sh{
-        printf '%s' "$kak_reg_dquote" | kitty @ send-text \
-            --match="id:${kak_opt_scrollback_kitty_window_id}" \
-            --bracketed-paste=enable \
-            --stdin
-        printf '\r' | kitty @ send-text \
-            --match="id:${kak_opt_scrollback_kitty_window_id}" \
-            --stdin
-    }
+    execute-keys '%'
+    kakoune-scrollback-send-to-kitty
+    kakoune-scrollback-execute-in-kitty
     delete-buffer *compose*
     quit
 }
