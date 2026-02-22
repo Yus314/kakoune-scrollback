@@ -53,6 +53,14 @@ fn run_core(
     Ok((tmp_dir, text_path, init_path))
 }
 
+fn check_stdin_size(actual: u64, max: u64) -> Result<()> {
+    anyhow::ensure!(
+        actual <= max,
+        "scrollback input exceeds {max} bytes, aborting"
+    );
+    Ok(())
+}
+
 fn run() -> Result<()> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
@@ -65,12 +73,9 @@ fn run() -> Result<()> {
     let palette = kitty::get_palette(window_id);
     let mut stdin_data = Vec::new();
     std::io::stdin()
-        .take(MAX_STDIN_BYTES)
+        .take(MAX_STDIN_BYTES + 1)
         .read_to_end(&mut stdin_data)?;
-    anyhow::ensure!(
-        (stdin_data.len() as u64) < MAX_STDIN_BYTES,
-        "scrollback input exceeds {MAX_STDIN_BYTES} bytes, aborting"
-    );
+    check_stdin_size(stdin_data.len() as u64, MAX_STDIN_BYTES)?;
 
     let max_scrollback_lines: usize = env::var("KAKOUNE_SCROLLBACK_MAX_LINES")
         .ok()
@@ -155,6 +160,27 @@ mod tests {
     #[test]
     fn check_reentry_allows() {
         assert!(check_reentry(None).is_ok());
+    }
+
+    // --- check_stdin_size ---
+
+    #[test]
+    fn check_stdin_size_within_limit() {
+        assert!(check_stdin_size(0, 100).is_ok());
+        assert!(check_stdin_size(99, 100).is_ok());
+        assert!(check_stdin_size(100, 100).is_ok()); // ちょうど制限 = OK
+    }
+
+    #[test]
+    fn check_stdin_size_exceeds_limit() {
+        assert!(check_stdin_size(101, 100).is_err());
+        assert!(check_stdin_size(200, 100).is_err());
+    }
+
+    #[test]
+    fn check_stdin_size_zero_max() {
+        assert!(check_stdin_size(0, 0).is_ok());
+        assert!(check_stdin_size(1, 0).is_err());
     }
 
     // --- 2. tmpdir ---
