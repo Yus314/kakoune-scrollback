@@ -79,3 +79,7 @@ The maximum number of scrollback lines to process can be set via the
 `KAKOUNE_SCROLLBACK_MAX_LINES` environment variable (default: `200000`).
 To change it, add `--env KAKOUNE_SCROLLBACK_MAX_LINES=5000` to the `launch`
 command in your `kitty.conf`.
+
+## Acknowledgments
+
+- [kitty-scrollback.nvim](https://github.com/mikesmithgh/kitty-scrollback.nvim) — Kitty scrollback viewer for Neovim. This project was inspired by kitty-scrollback.nvim.
