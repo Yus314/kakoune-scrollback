@@ -67,6 +67,16 @@ pub fn write_ranges(path: &Path, screen: &ProcessedScreen) -> Result<()> {
     Ok(())
 }
 
+/// Kakoune のシングルクォート文字列用エスケープ (' → '')
+pub(crate) fn escape_kak_single_quote(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+/// POSIX shell のシングルクォート文字列用エスケープ (' → '\'')
+fn escape_shell_single_quote(s: &str) -> String {
+    s.replace('\'', "'\\''")
+}
+
 /// Escape | and \ in face strings for range-specs
 fn escape_face(face: &str) -> String {
     face.replace('\\', "\\\\")
@@ -83,8 +93,10 @@ pub fn write_init_kak(
     ranges_path: &Path,
 ) -> Result<()> {
     let mut script = String::new();
-    let tmp_dir_str = tmp_dir.display();
-    let ranges_path_str = ranges_path.display();
+    let tmp_dir_s = tmp_dir.display().to_string();
+    let tmp_dir_kak = escape_kak_single_quote(&tmp_dir_s);
+    let tmp_dir_sh = escape_shell_single_quote(&tmp_dir_s);
+    let ranges_path_kak = escape_kak_single_quote(&ranges_path.display().to_string());
 
     // Global options (accessible from compose client too)
     writeln!(
@@ -97,7 +109,7 @@ pub fn write_init_kak(
     writeln!(script, "set-option buffer readonly true")?;
     writeln!(
         script,
-        "set-option buffer scrollback_tmp_dir '{tmp_dir_str}'"
+        "set-option buffer scrollback_tmp_dir '{tmp_dir_kak}'"
     )?;
     writeln!(script)?;
 
@@ -107,7 +119,7 @@ pub fn write_init_kak(
         "declare-option -hidden range-specs scrollback_colors"
     )?;
     writeln!(script, "add-highlighter buffer/ ranges scrollback_colors")?;
-    writeln!(script, "source '{ranges_path_str}'")?;
+    writeln!(script, "source '{ranges_path_kak}'")?;
     writeln!(script, "update-option buffer scrollback_colors")?;
     writeln!(script)?;
 
@@ -130,12 +142,9 @@ pub fn write_init_kak(
     writeln!(script, "    evaluate-commands %sh{{")?;
     writeln!(
         script,
-        "        if [ -d '{tmp_dir_str}' ] && [ \"$(printf '%s' \"$kak_client_list\" | wc -w)\" -le 1 ]; then"
+        "        if [ -d '{tmp_dir_sh}' ] && [ \"$(printf '%s' \"$kak_client_list\" | wc -w)\" -le 1 ]; then"
     )?;
-    writeln!(
-        script,
-        "            echo \"nop %sh{{ rm -rf '{tmp_dir_str}' }}\""
-    )?;
+    writeln!(script, "            rm -rf -- '{tmp_dir_sh}'")?;
     writeln!(script, "        fi")?;
     writeln!(script, "    }}")?;
     writeln!(script, "}}")?;
@@ -245,7 +254,7 @@ mod tests {
         assert!(content.contains("execute-keys vb"));
         assert!(content.contains("kakoune-scrollback-setup-keymaps"));
         assert!(content.contains("ClientClose"));
-        assert!(content.contains("rm -rf"));
+        assert!(content.contains("rm -rf --"));
     }
 
     // --- Phase 1: HIGH priority ---
@@ -429,6 +438,85 @@ mod tests {
     #[test]
     fn escape_face_single_quote() {
         assert_eq!(escape_face("it's"), "it''s");
+    }
+
+    // --- Path injection prevention ---
+
+    #[test]
+    fn escape_kak_single_quote_normal() {
+        assert_eq!(escape_kak_single_quote("/tmp/foo"), "/tmp/foo");
+    }
+
+    #[test]
+    fn escape_kak_single_quote_with_quote() {
+        assert_eq!(escape_kak_single_quote("/tmp/it's"), "/tmp/it''s");
+    }
+
+    #[test]
+    fn escape_kak_single_quote_empty() {
+        assert_eq!(escape_kak_single_quote(""), "");
+    }
+
+    #[test]
+    fn escape_shell_single_quote_normal() {
+        assert_eq!(escape_shell_single_quote("/tmp/foo"), "/tmp/foo");
+    }
+
+    #[test]
+    fn escape_shell_single_quote_with_quote() {
+        assert_eq!(escape_shell_single_quote("/tmp/it's"), "/tmp/it'\\''s");
+    }
+
+    #[test]
+    fn escape_shell_single_quote_with_command_substitution() {
+        assert_eq!(
+            escape_shell_single_quote("/tmp/$(rm -rf /)"),
+            "/tmp/$(rm -rf /)"
+        );
+    }
+
+    #[test]
+    fn write_init_kak_escapes_single_quotes_in_paths() {
+        let screen = make_screen(
+            vec![ProcessedLine {
+                text: "test".to_string(),
+                spans: vec![],
+            }],
+            CursorPosition { line: 1, col: 1 },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        // Create a subdirectory with a single quote in the name
+        let evil_dir = dir.path().join("it's-a-dir");
+        std::fs::create_dir_all(&evil_dir).unwrap();
+        let path = evil_dir.join("init.kak");
+        let ranges_path = evil_dir.join("ranges.kak");
+        write_init_kak(&path, &screen, wid("42"), &evil_dir, &ranges_path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        // Kakoune contexts should use '' escaping
+        assert!(
+            content.contains("scrollback_tmp_dir 'it''s-a-dir'")
+                || content.contains("it''s-a-dir"),
+            "Kakoune single quotes should be escaped with '', got:\n{content}"
+        );
+
+        // Shell contexts should use '\'' escaping
+        assert!(
+            content.contains("it'\\''s-a-dir"),
+            "Shell single quotes should be escaped with '\\''', got:\n{content}"
+        );
+
+        // The dangerous 3-layer nesting pattern should not exist
+        assert!(
+            !content.contains("echo \"nop %sh{"),
+            "Should not contain nested echo nop %sh pattern, got:\n{content}"
+        );
+
+        // rm -rf should use -- for safety
+        assert!(
+            content.contains("rm -rf --"),
+            "rm -rf should use -- flag, got:\n{content}"
+        );
     }
 
     #[test]

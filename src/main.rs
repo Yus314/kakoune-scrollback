@@ -75,10 +75,13 @@ fn run() -> Result<()> {
 
     let tmp_path = tmp_dir.keep();
 
+    let init_path_escaped =
+        output::escape_kak_single_quote(&init_path.display().to_string());
+
     let err = std::process::Command::new("kak")
         .env("KAKOUNE_SCROLLBACK", "1")
         .arg("-e")
-        .arg(format!("source '{}'", init_path.display()))
+        .arg(format!("source '{init_path_escaped}'"))
         .arg(&text_path)
         .exec();
 
@@ -278,7 +281,7 @@ mod tests {
 
         // The rm -rf cleanup command should reference the actual tmpdir
         assert!(
-            init.contains(&format!("rm -rf '{tmp_dir_str}'")),
+            init.contains(&format!("rm -rf -- '{tmp_dir_str}'")),
             "init.kak should reference tmpdir in rm -rf, got: {init}"
         );
     }
