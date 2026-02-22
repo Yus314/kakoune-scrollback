@@ -67,12 +67,12 @@ pub fn write_ranges(path: &Path, screen: &ProcessedScreen) -> Result<()> {
     Ok(())
 }
 
-/// Kakoune のシングルクォート文字列用エスケープ (' → '')
+/// Escape for Kakoune single-quoted strings (' → '')
 pub(crate) fn escape_kak_single_quote(s: &str) -> String {
     s.replace('\'', "''")
 }
 
-/// POSIX shell のシングルクォート文字列用エスケープ (' → '\'')
+/// Escape for POSIX shell single-quoted strings (' → '\'')
 fn escape_shell_single_quote(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
