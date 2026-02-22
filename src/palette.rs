@@ -98,7 +98,25 @@ pub fn idx_to_rgb(idx: u8) -> (u8, u8, u8) {
     }
 }
 
+/// Resolve `vt100::Color` to normalized RGB. Returns `None` for `Default`.
+pub fn color_to_rgb(color: vt100::Color, palette: &[u8; 48]) -> Option<[u8; 3]> {
+    match color {
+        vt100::Color::Default => None,
+        vt100::Color::Rgb(r, g, b) => Some([r, g, b]),
+        vt100::Color::Idx(idx) => {
+            let (r, g, b) = if idx < 16 {
+                let base = idx as usize * 3;
+                (palette[base], palette[base + 1], palette[base + 2])
+            } else {
+                idx_to_rgb(idx)
+            };
+            Some([r, g, b])
+        }
+    }
+}
+
 /// Convert `vt100::Color` to Kakoune face color string
+#[cfg(test)]
 pub fn color_to_kak(color: vt100::Color, palette: &[u8; 48]) -> Option<String> {
     match color {
         vt100::Color::Default => None,

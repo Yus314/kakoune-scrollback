@@ -132,7 +132,7 @@ fn process_row(
 ) -> ProcessedLine {
     let mut text = String::new();
     let mut spans: Vec<Span> = Vec::new();
-    let mut current_face: Option<String> = None;
+    let mut current_key: Option<FaceKey> = None;
     let mut span_start_byte: usize = 1; // 1-based
 
     for col in 0..cols {
@@ -160,34 +160,32 @@ fn process_row(
             text.push_str(contents);
         }
 
-        // Compute face for this cell
-        let face = cell_face(cell, palette);
+        let key = cell_face_key(cell, palette);
 
-        if face != current_face {
-            // Close previous span if any
+        if key != current_key {
             let byte_now = byte_offset_before + 1; // 1-based
-            if let Some(f) = current_face.take() {
+            if let Some(ref k) = current_key {
                 if span_start_byte < byte_now {
                     spans.push(Span {
                         start_byte: span_start_byte,
                         end_byte: byte_now,
-                        face: f,
+                        face: face_key_to_string(k),
                     });
                 }
             }
-            current_face = face;
+            current_key = key;
             span_start_byte = byte_now;
         }
     }
 
     // Close final span
     let byte_end = text.len() + 1; // 1-based, exclusive
-    if let Some(f) = current_face {
+    if let Some(ref k) = current_key {
         if span_start_byte < byte_end {
             spans.push(Span {
                 start_byte: span_start_byte,
                 end_byte: byte_end,
-                face: f,
+                face: face_key_to_string(k),
             });
         }
     }
@@ -209,39 +207,83 @@ fn process_row(
     ProcessedLine { text, spans }
 }
 
-fn cell_face(cell: &vt100::Cell, palette: &[u8; 48]) -> Option<String> {
-    let fg = palette::color_to_kak(cell.fgcolor(), palette);
-    let bg = palette::color_to_kak(cell.bgcolor(), palette);
+/// Cell visual attributes as a normalized, zero-allocation key.
+///
+/// fg/bg store resolved RGB (not raw `vt100::Color`) so that
+/// `Idx(1)` and `Rgb(204,0,0)` compare equal when the palette matches.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FaceKey {
+    fg: Option<[u8; 3]>,
+    bg: Option<[u8; 3]>,
+    attrs: u8, // b=0x01, d=0x02, i=0x04, u=0x08, r=0x10
+}
 
-    let mut attrs = String::new();
+fn cell_face_key(cell: &vt100::Cell, palette: &[u8; 48]) -> Option<FaceKey> {
+    let fg = palette::color_to_rgb(cell.fgcolor(), palette);
+    let bg = palette::color_to_rgb(cell.bgcolor(), palette);
+
+    let mut attrs = 0u8;
     if cell.bold() {
-        attrs.push('b');
+        attrs |= 0x01;
     }
     if cell.dim() {
-        attrs.push('d');
+        attrs |= 0x02;
     }
     if cell.italic() {
-        attrs.push('i');
+        attrs |= 0x04;
     }
     if cell.underline() {
-        attrs.push('u');
+        attrs |= 0x08;
     }
     if cell.inverse() {
-        attrs.push('r');
+        attrs |= 0x10;
     }
 
-    if fg.is_none() && bg.is_none() && attrs.is_empty() {
+    if fg.is_none() && bg.is_none() && attrs == 0 {
         return None;
     }
 
-    let fg_str = fg.as_deref().unwrap_or("default");
-    let bg_str = bg.as_deref().unwrap_or("default");
-    let attr_str = if attrs.is_empty() {
-        String::new()
-    } else {
-        format!("+{attrs}")
-    };
-    Some(format!("{fg_str},{bg_str}{attr_str}"))
+    Some(FaceKey { fg, bg, attrs })
+}
+
+fn face_key_to_string(key: &FaceKey) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(32);
+
+    match key.fg {
+        Some([r, g, b]) => {
+            write!(s, "rgb:{r:02X}{g:02X}{b:02X}").unwrap();
+        }
+        None => s.push_str("default"),
+    }
+    s.push(',');
+    match key.bg {
+        Some([r, g, b]) => {
+            write!(s, "rgb:{r:02X}{g:02X}{b:02X}").unwrap();
+        }
+        None => s.push_str("default"),
+    }
+
+    if key.attrs != 0 {
+        s.push('+');
+        if key.attrs & 0x01 != 0 {
+            s.push('b');
+        }
+        if key.attrs & 0x02 != 0 {
+            s.push('d');
+        }
+        if key.attrs & 0x04 != 0 {
+            s.push('i');
+        }
+        if key.attrs & 0x08 != 0 {
+            s.push('u');
+        }
+        if key.attrs & 0x10 != 0 {
+            s.push('r');
+        }
+    }
+
+    s
 }
 
 #[cfg(test)]
@@ -713,5 +755,26 @@ mod tests {
         // Cursor line should not exceed lines.len()
         assert!(screen.cursor.line <= screen.lines.len());
         assert!(screen.cursor.line >= 1);
+    }
+
+    #[test]
+    fn idx_and_rgb_same_color_merge() {
+        // ESC[31m (Idx 1 = palette red #CC0000) then ESC[38;2;204;0;0m (direct RGB)
+        // With default palette, Idx(1) resolves to the same RGB, so adjacent
+        // cells should merge into a single span.
+        let input = b"\x1b[31mA\x1b[38;2;204;0;0mB\x1b[0m";
+        let pd = default_pipe_data();
+        let screen = process_bytes(
+            &pd,
+            input,
+            &palette::DEFAULT_PALETTE,
+            DEFAULT_MAX_SCROLLBACK_LINES,
+        );
+        assert_eq!(screen.lines[0].text, "AB");
+        assert_eq!(
+            screen.lines[0].spans.len(),
+            1,
+            "Idx(1) and Rgb(204,0,0) should merge into one span"
+        );
     }
 }
