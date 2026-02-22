@@ -19,12 +19,16 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+      - name: Install Kakoune
+        run: sudo apt-get update && sudo apt-get install -y kakoune
       - name: Check formatting
         run: cargo fmt --check
       - name: Clippy
         run: cargo clippy -- -D warnings
       - name: Test
         run: cargo test
+      - name: Kakoune plugin tests
+        run: ./test/kak_tests.sh
 
   nix:
     name: Nix build

@@ -318,4 +318,253 @@ mod tests {
             "Wide char cursor byte offset should be correct, got: {init}"
         );
     }
+
+    // --- 6. Kakoune integration tests (require kak on PATH) ---
+
+    fn kak_available() -> bool {
+        std::process::Command::new("kak")
+            .arg("-version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    fn plugin_path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("rc")
+            .join("kakoune-scrollback.kak")
+    }
+
+    fn run_kak_cmd(commands: &str, tmp_dir: &std::path::Path) -> std::process::Output {
+        let runtime_dir = tmp_dir.join("kak-runtime");
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        std::process::Command::new("timeout")
+            .args(["5", "kak", "-n", "-ui", "dummy", "-e", commands])
+            .env("XDG_RUNTIME_DIR", &runtime_dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .expect("failed to run kak")
+    }
+
+    /// Source plugin + init.kak in kak, expect clean exit.
+    fn validate_in_kak(
+        text_path: &std::path::Path,
+        init_path: &std::path::Path,
+        tmp_dir: &std::path::Path,
+    ) {
+        let plugin = plugin_path();
+        let commands = format!(
+            "edit '{text}'; source '{plugin}'; source '{init}'\nquit!",
+            text = output::escape_kak_single_quote(&text_path.display().to_string()),
+            plugin = output::escape_kak_single_quote(&plugin.display().to_string()),
+            init = output::escape_kak_single_quote(&init_path.display().to_string()),
+        );
+        let out = run_kak_cmd(&commands, tmp_dir);
+        assert!(
+            out.status.success(),
+            "kak failed (exit {:?}):\nstderr: {}\nstdout: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout),
+        );
+    }
+
+    /// Source plugin + init.kak, write %val{selection_desc} to result file, return it.
+    /// Uses a separate result_dir because init.kak's ClientClose hook deletes the main tmpdir.
+    fn validate_cursor_in_kak(
+        text_path: &std::path::Path,
+        init_path: &std::path::Path,
+        tmp_dir: &std::path::Path,
+    ) -> String {
+        let plugin = plugin_path();
+        let result_dir = tempfile::tempdir().unwrap();
+        let result_path = result_dir.path().join("cursor_result");
+        let commands = format!(
+            "edit '{text}'; source '{plugin}'; source '{init}'\nnop %sh{{ printf '%s' \"$kak_selection_desc\" > '{result}' }}\nquit!",
+            text = output::escape_kak_single_quote(&text_path.display().to_string()),
+            plugin = output::escape_kak_single_quote(&plugin.display().to_string()),
+            init = output::escape_kak_single_quote(&init_path.display().to_string()),
+            result = output::escape_kak_single_quote(&result_path.display().to_string()),
+        );
+        let out = run_kak_cmd(&commands, tmp_dir);
+        assert!(
+            out.status.success(),
+            "kak failed (exit {:?}):\nstderr: {}\nstdout: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout),
+        );
+        std::fs::read_to_string(&result_path).expect("failed to read cursor result")
+    }
+
+    #[test]
+    fn kak_validates_plain_text() {
+        if !kak_available() {
+            return;
+        }
+        let pd = KittyPipeData {
+            cursor_x: 3,
+            cursor_y: 1,
+            lines: 24,
+            columns: 80,
+        };
+        let (tmp_dir, text_path, init_path) =
+            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"hello\r\nworld").unwrap();
+        validate_in_kak(&text_path, &init_path, tmp_dir.path());
+    }
+
+    #[test]
+    fn kak_validates_colored_text() {
+        if !kak_available() {
+            return;
+        }
+        let pd = default_pipe_data();
+        let input = b"\x1b[31mRed\x1b[0m \x1b[32mGreen\x1b[0m \x1b[34mBlue\x1b[0m";
+        let (tmp_dir, text_path, init_path) =
+            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, input).unwrap();
+        validate_in_kak(&text_path, &init_path, tmp_dir.path());
+    }
+
+    #[test]
+    fn kak_validates_wide_chars() {
+        if !kak_available() {
+            return;
+        }
+        let pd = default_pipe_data();
+        let input = "日本語テスト".as_bytes();
+        let (tmp_dir, text_path, init_path) =
+            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, input).unwrap();
+        validate_in_kak(&text_path, &init_path, tmp_dir.path());
+    }
+
+    #[test]
+    fn kak_validates_large_scrollback() {
+        if !kak_available() {
+            return;
+        }
+        let mut input = Vec::new();
+        for i in 0..100 {
+            input.extend_from_slice(format!("line {i}: the quick brown fox\r\n").as_bytes());
+        }
+        let pd = KittyPipeData {
+            cursor_x: 0,
+            cursor_y: 5,
+            lines: 24,
+            columns: 80,
+        };
+        let (tmp_dir, text_path, init_path) =
+            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, &input).unwrap();
+        validate_in_kak(&text_path, &init_path, tmp_dir.path());
+    }
+
+    #[test]
+    fn kak_validates_many_color_spans() {
+        if !kak_available() {
+            return;
+        }
+        let mut input = Vec::new();
+        let colors = [b"31", b"32", b"33", b"34", b"35", b"36"];
+        for i in 0..50 {
+            let color = colors[i % colors.len()];
+            input.extend_from_slice(b"\x1b[");
+            input.extend_from_slice(color);
+            input.extend_from_slice(b"m");
+            input.extend_from_slice(format!("colored line {i}").as_bytes());
+            input.extend_from_slice(b"\x1b[0m\r\n");
+        }
+        let pd = default_pipe_data();
+        let (tmp_dir, text_path, init_path) =
+            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, &input).unwrap();
+        validate_in_kak(&text_path, &init_path, tmp_dir.path());
+    }
+
+    #[test]
+    fn kak_validates_empty_input() {
+        if !kak_available() {
+            return;
+        }
+        let pd = default_pipe_data();
+        let (tmp_dir, text_path, init_path) =
+            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"").unwrap();
+        validate_in_kak(&text_path, &init_path, tmp_dir.path());
+    }
+
+    #[test]
+    fn kak_scrollback_colors_populated() {
+        if !kak_available() {
+            return;
+        }
+        let pd = default_pipe_data();
+        let input = b"\x1b[31mRed text here\x1b[0m";
+        let (tmp_dir, text_path, init_path) =
+            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, input).unwrap();
+        let plugin = plugin_path();
+        let result_dir = tempfile::tempdir().unwrap();
+        let result_path = result_dir.path().join("colors_result");
+        let commands = format!(
+            "edit '{text}'; source '{plugin}'; source '{init}'\nnop %sh{{ printf '%s' \"$kak_opt_scrollback_colors\" > '{result}' }}\nquit!",
+            text = output::escape_kak_single_quote(&text_path.display().to_string()),
+            plugin = output::escape_kak_single_quote(&plugin.display().to_string()),
+            init = output::escape_kak_single_quote(&init_path.display().to_string()),
+            result = output::escape_kak_single_quote(&result_path.display().to_string()),
+        );
+        let out = run_kak_cmd(&commands, tmp_dir.path());
+        assert!(
+            out.status.success(),
+            "kak failed: {}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+        let colors = std::fs::read_to_string(&result_path).expect("failed to read colors result");
+        assert!(
+            !colors.is_empty(),
+            "scrollback_colors should be populated after sourcing colored input"
+        );
+    }
+
+    #[test]
+    fn kak_cursor_position_plain() {
+        if !kak_available() {
+            return;
+        }
+        let pd = KittyPipeData {
+            cursor_x: 3,
+            cursor_y: 1,
+            lines: 24,
+            columns: 80,
+        };
+        let (tmp_dir, text_path, init_path) =
+            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"hello\r\nworld").unwrap();
+        let desc = validate_cursor_in_kak(&text_path, &init_path, tmp_dir.path());
+        assert_eq!(
+            desc.trim(),
+            "2.4,2.4",
+            "cursor should be at line 2, byte 4 (after 'wor')"
+        );
+    }
+
+    #[test]
+    fn kak_cursor_position_wide_chars() {
+        if !kak_available() {
+            return;
+        }
+        let input = "日本語test".as_bytes();
+        let pd = KittyPipeData {
+            cursor_x: 6,
+            cursor_y: 0,
+            lines: 24,
+            columns: 80,
+        };
+        let (tmp_dir, text_path, init_path) =
+            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, input).unwrap();
+        let desc = validate_cursor_in_kak(&text_path, &init_path, tmp_dir.path());
+        assert_eq!(
+            desc.trim(),
+            "1.10,1.10",
+            "cursor should be at byte 10 (after 9 bytes of 日本語)"
+        );
+    }
 }
