@@ -18,6 +18,20 @@ define-command -hidden kakoune-scrollback-setup-keymaps %{
     map buffer normal !     ':kakoune-scrollback-execute<ret>'
     map buffer normal e     ':kakoune-scrollback-edit<ret>'
     map buffer normal ?     ':kakoune-scrollback-help<ret>'
+
+    # User extension points (define kakoune-scrollback-user-keymaps
+    # in your kakrc to override specific keys)
+    try %{ kakoune-scrollback-user-keymaps }
+    trigger-user-hook scrollback-keymaps-ready
+}
+
+define-command -hidden kakoune-scrollback-setup-compose-keymaps %{
+    map buffer normal <a-s>   ':kakoune-scrollback-submit<ret>'
+    map buffer normal <a-ret> ':kakoune-scrollback-submit-exec<ret>'
+    map buffer normal <esc>   ':kakoune-scrollback-cancel<ret>'
+
+    try %{ kakoune-scrollback-user-compose-keymaps }
+    trigger-user-hook scrollback-compose-keymaps-ready
 }
 
 # --- Kitty send helpers ---
@@ -82,7 +96,8 @@ e      : open paste window
          <a-s>   : submit (paste)
          <a-ret> : submit and execute
          <esc>   : cancel
-?      : show this help'
+?      : show this help
+(keys can be customized — see README)'
 }
 
 # --- Paste window ---
@@ -102,9 +117,7 @@ define-command kakoune-scrollback-edit %{
             --env KAKOUNE_SCROLLBACK=1 \
             -- kak -c "$kak_session" -e '
                 buffer *compose*
-                map buffer normal <a-s>   ":kakoune-scrollback-submit<ret>"
-                map buffer normal <a-ret> ":kakoune-scrollback-submit-exec<ret>"
-                map buffer normal <esc>   ":kakoune-scrollback-cancel<ret>"
+                kakoune-scrollback-setup-compose-keymaps
                 execute-keys gi
             '
     }

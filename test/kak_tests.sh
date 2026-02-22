@@ -111,6 +111,9 @@ assert_ok "kakoune-scrollback-generate-kitty-conf" \
 assert_ok "kakoune-scrollback-setup-keymaps" \
     "source '$PLUGIN'; edit -scratch *test*; kakoune-scrollback-setup-keymaps; quit! 0"
 
+assert_ok "kakoune-scrollback-setup-compose-keymaps" \
+    "source '$PLUGIN'; edit -scratch *compose*; kakoune-scrollback-setup-compose-keymaps; quit! 0"
+
 # quit command terminates kak; success = command exists and runs
 assert_ok "kakoune-scrollback-quit" \
     "source '$PLUGIN'; kakoune-scrollback-quit"
@@ -221,6 +224,40 @@ assert_file_eq "q keymap triggers quit command" "$RESULT" "QUIT"
 assert_ok "? keymap shows help" \
     "source '$PLUGIN'; edit -scratch *test*; kakoune-scrollback-setup-keymaps; execute-keys -with-maps ?
 quit!"
+
+# User extension point: kakoune-scrollback-user-keymaps (Approach E)
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *test*
+    define-command kakoune-scrollback-user-keymaps %{
+        define-command -override kakoune-scrollback-quit %{
+            nop %sh{ printf CUSTOM > '$RESULT' }
+        }
+        map buffer normal Q ':kakoune-scrollback-quit<ret>'
+    }
+    kakoune-scrollback-setup-keymaps
+    execute-keys -with-maps Q
+    quit!
+" || true
+assert_file_eq "user-keymaps command overrides Q" "$RESULT" "CUSTOM"
+
+# User extension point: trigger-user-hook scrollback-keymaps-ready (Approach F)
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *test*
+    hook global User scrollback-keymaps-ready %{
+        define-command -override kakoune-scrollback-quit %{
+            nop %sh{ printf HOOK > '$RESULT' }
+        }
+        map buffer normal Q ':kakoune-scrollback-quit<ret>'
+    }
+    kakoune-scrollback-setup-keymaps
+    execute-keys -with-maps Q
+    quit!
+" || true
+assert_file_eq "User hook overrides Q" "$RESULT" "HOOK"
 
 # 6. Option mutability (global scope)
 echo ""
