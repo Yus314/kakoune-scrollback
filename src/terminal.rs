@@ -106,15 +106,12 @@ fn push_row(
 ) {
     let line_idx = lines.len();
     let is_cursor_line = line_idx + 1 == cursor_output_line;
-    let pline = process_row(
-        screen,
-        row,
-        pipe_data.columns,
-        pipe_data,
-        is_cursor_line,
-        cursor,
-        palette,
-    );
+    let cursor_x = if is_cursor_line {
+        Some(pipe_data.cursor_x)
+    } else {
+        None
+    };
+    let pline = process_row(screen, row, pipe_data.columns, cursor_x, cursor, palette);
     lines.push(pline);
     if is_cursor_line {
         cursor.line = line_idx + 1;
@@ -125,8 +122,7 @@ fn process_row(
     screen: &vt100::Screen,
     row: u16,
     cols: u16,
-    pipe_data: &KittyPipeData,
-    is_cursor_line: bool,
+    cursor_x: Option<usize>,
     cursor: &mut CursorPosition,
     palette: &[u8; 48],
 ) -> ProcessedLine {
@@ -149,8 +145,10 @@ fn process_row(
         let byte_offset_before = text.len(); // 0-based
 
         // Track cursor column (byte offset)
-        if is_cursor_line && usize::from(col) == pipe_data.cursor_x {
-            cursor.col = byte_offset_before + 1; // 1-based
+        if let Some(cx) = cursor_x {
+            if usize::from(col) == cx {
+                cursor.col = byte_offset_before + 1; // 1-based
+            }
         }
 
         // Append cell content (or space if empty)
