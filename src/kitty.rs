@@ -78,10 +78,19 @@ pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
         bail!("KITTY_PIPE_DATA: columns must be at least 1");
     }
 
+    let cursor_x: usize = cursor_x_str
+        .parse()
+        .context("KITTY_PIPE_DATA: invalid cursor_x")?;
+
+    if cursor_y >= usize::from(lines) {
+        bail!("KITTY_PIPE_DATA: cursor_y ({cursor_y}) must be less than lines ({lines})");
+    }
+    if cursor_x >= usize::from(columns) {
+        bail!("KITTY_PIPE_DATA: cursor_x ({cursor_x}) must be less than columns ({columns})");
+    }
+
     Ok(KittyPipeData {
-        cursor_x: cursor_x_str
-            .parse()
-            .context("KITTY_PIPE_DATA: invalid cursor_x")?,
+        cursor_x,
         cursor_y,
         lines,
         columns,
@@ -232,5 +241,39 @@ mod tests {
         let msg = err.unwrap_err().to_string();
         assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
         assert!(msg.contains("columns"), "error should mention columns: {msg}");
+    }
+
+    #[test]
+    fn parse_pipe_data_rejects_cursor_y_out_of_range() {
+        let err = parse_pipe_data_str("0,0:24:24,80");
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
+        assert!(msg.contains("cursor_y"), "error should mention cursor_y: {msg}");
+    }
+
+    #[test]
+    fn parse_pipe_data_rejects_cursor_x_out_of_range() {
+        let err = parse_pipe_data_str("0,80:0:24,80");
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
+        assert!(msg.contains("cursor_x"), "error should mention cursor_x: {msg}");
+    }
+
+    #[test]
+    fn parse_pipe_data_cursor_at_max_valid_position() {
+        let data = parse_pipe_data_str("0,79:23:24,80").unwrap();
+        assert_eq!(data.cursor_x, 79);
+        assert_eq!(data.cursor_y, 23);
+    }
+
+    #[test]
+    fn parse_pipe_data_rejects_huge_cursor_y() {
+        let err = parse_pipe_data_str("0,0:9999:24,80");
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
+        assert!(msg.contains("cursor_y"), "error should mention cursor_y: {msg}");
     }
 }

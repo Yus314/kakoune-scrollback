@@ -51,7 +51,7 @@ pub fn process_bytes(
     let mut cursor = CursorPosition { line: 1, col: 1 };
 
     // The cursor in the output buffer is at line (total_sb + cursor_y + 1), 1-based
-    let cursor_output_line = total_sb + pipe_data.cursor_y + 1;
+    let cursor_output_line = total_sb.saturating_add(pipe_data.cursor_y).saturating_add(1);
 
     // Read initial screen rows from the max scrollback offset
     screen.set_scrollback(total_sb);
@@ -782,6 +782,20 @@ mod tests {
         // Should not panic — process_bytes clamps columns to 1
         let screen = process_bytes(&pd, b"Hello", &palette::DEFAULT_PALETTE, DEFAULT_MAX_SCROLLBACK_LINES);
         assert!(screen.cursor.line >= 1);
+    }
+
+    #[test]
+    fn process_bytes_saturating_add_no_panic() {
+        let pd = KittyPipeData {
+            cursor_x: 0,
+            cursor_y: usize::MAX,
+            lines: 24,
+            columns: 80,
+        };
+        let screen = process_bytes(&pd, b"Hello", &palette::DEFAULT_PALETTE, DEFAULT_MAX_SCROLLBACK_LINES);
+        // Saturated cursor_output_line → is_cursor_line never matches → cursor stays at initial (1,1)
+        assert_eq!(screen.cursor.line, 1);
+        assert_eq!(screen.cursor.col, 1);
     }
 
     #[test]
