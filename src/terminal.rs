@@ -32,8 +32,11 @@ pub fn process_bytes(
     palette: &[u8; 48],
     max_scrollback_lines: usize,
 ) -> ProcessedScreen {
-    let rows = pipe_data.lines;
-    let cols = pipe_data.columns;
+    // Clamp to minimum 1: vt100::Parser panics with 0 rows or 0 columns.
+    // parse_pipe_data_str() already rejects 0, but this guards against
+    // direct KittyPipeData construction (e.g. in tests).
+    let rows = pipe_data.lines.max(1);
+    let cols = pipe_data.columns.max(1);
 
     let mut parser = vt100::Parser::new(rows, cols, max_scrollback_lines);
     parser.process(data);
@@ -752,6 +755,32 @@ mod tests {
         let screen = process_bytes(&pd, &input, &palette::DEFAULT_PALETTE, 5);
         // Cursor line should not exceed lines.len()
         assert!(screen.cursor.line <= screen.lines.len());
+        assert!(screen.cursor.line >= 1);
+    }
+
+    #[test]
+    fn process_bytes_does_not_panic_with_zero_lines() {
+        let pd = KittyPipeData {
+            cursor_x: 0,
+            cursor_y: 0,
+            lines: 0,
+            columns: 80,
+        };
+        // Should not panic — process_bytes clamps lines to 1
+        let screen = process_bytes(&pd, b"Hello", &palette::DEFAULT_PALETTE, DEFAULT_MAX_SCROLLBACK_LINES);
+        assert!(screen.cursor.line >= 1);
+    }
+
+    #[test]
+    fn process_bytes_does_not_panic_with_zero_columns() {
+        let pd = KittyPipeData {
+            cursor_x: 0,
+            cursor_y: 0,
+            lines: 24,
+            columns: 0,
+        };
+        // Should not panic — process_bytes clamps columns to 1
+        let screen = process_bytes(&pd, b"Hello", &palette::DEFAULT_PALETTE, DEFAULT_MAX_SCROLLBACK_LINES);
         assert!(screen.cursor.line >= 1);
     }
 

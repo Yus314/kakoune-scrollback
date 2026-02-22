@@ -14,6 +14,7 @@ impl fmt::Display for WindowId {
     }
 }
 
+#[derive(Debug)]
 pub struct KittyPipeData {
     pub cursor_x: usize,
     pub cursor_y: usize,
@@ -63,17 +64,27 @@ pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
         bail!("KITTY_PIPE_DATA: expected 'lines,columns' in third part, got '{part2}'");
     }
 
+    let lines: u16 = lines_str
+        .parse()
+        .context("KITTY_PIPE_DATA: invalid lines")?;
+    let columns: u16 = columns_str
+        .parse()
+        .context("KITTY_PIPE_DATA: invalid columns")?;
+
+    if lines == 0 {
+        bail!("KITTY_PIPE_DATA: lines must be at least 1");
+    }
+    if columns == 0 {
+        bail!("KITTY_PIPE_DATA: columns must be at least 1");
+    }
+
     Ok(KittyPipeData {
         cursor_x: cursor_x_str
             .parse()
             .context("KITTY_PIPE_DATA: invalid cursor_x")?,
         cursor_y,
-        lines: lines_str
-            .parse()
-            .context("KITTY_PIPE_DATA: invalid lines")?,
-        columns: columns_str
-            .parse()
-            .context("KITTY_PIPE_DATA: invalid columns")?,
+        lines,
+        columns,
     })
 }
 
@@ -211,5 +222,23 @@ mod tests {
     #[test]
     fn parse_window_id_rejects_non_numeric() {
         assert!(parse_window_id("abc").is_err());
+    }
+
+    #[test]
+    fn parse_pipe_data_rejects_zero_lines() {
+        let err = parse_pipe_data_str("0,0:0:0,80");
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
+        assert!(msg.contains("lines"), "error should mention lines: {msg}");
+    }
+
+    #[test]
+    fn parse_pipe_data_rejects_zero_columns() {
+        let err = parse_pipe_data_str("0,0:0:24,0");
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
+        assert!(msg.contains("columns"), "error should mention columns: {msg}");
     }
 }
