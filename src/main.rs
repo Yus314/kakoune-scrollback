@@ -6,12 +6,72 @@ mod terminal;
 use anyhow::{bail, Context, Result};
 use std::env;
 
+enum CliAction {
+    ShowVersion,
+    ShowHelp,
+    Run { window_id_arg: String },
+}
+
+fn parse_args(args: &[String]) -> Result<CliAction, String> {
+    match args.get(1).map(String::as_str) {
+        None => Err("missing required argument: <WINDOW_ID>".into()),
+        Some("-h" | "--help") => Ok(CliAction::ShowHelp),
+        Some("-V" | "--version") => Ok(CliAction::ShowVersion),
+        Some(arg) if arg.starts_with('-') => Err(format!("unexpected argument '{arg}'")),
+        Some(arg) => Ok(CliAction::Run {
+            window_id_arg: arg.to_string(),
+        }),
+    }
+}
+
+fn print_version() {
+    println!("kakoune-scrollback {}", env!("CARGO_PKG_VERSION"));
+}
+
+fn print_help() {
+    print!(
+        "\
+kakoune-scrollback {}
+Kitty scrollback viewer for Kakoune
+
+USAGE:
+    kakoune-scrollback <WINDOW_ID>
+
+ARGS:
+    <WINDOW_ID>    Target Kitty window ID
+
+OPTIONS:
+    -h, --help       Print this help message
+    -V, --version    Print version information
+
+ENVIRONMENT:
+    KITTY_PIPE_DATA                Set automatically by Kitty
+    KAKOUNE_SCROLLBACK_MAX_LINES   Max lines to process (default: 200000)
+
+This tool is invoked via Kitty's pipe mechanism. See README for setup.
+",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
 fn main() {
-    if let Err(e) = run() {
-        eprintln!("kakoune-scrollback: {e:#}");
-        eprintln!("\nPress Enter to close.");
-        wait_for_keypress();
-        std::process::exit(1);
+    let args: Vec<String> = std::env::args().collect();
+    match parse_args(&args) {
+        Ok(CliAction::ShowVersion) => print_version(),
+        Ok(CliAction::ShowHelp) => print_help(),
+        Ok(CliAction::Run { window_id_arg }) => {
+            if let Err(e) = run(&window_id_arg) {
+                eprintln!("kakoune-scrollback: {e:#}");
+                eprintln!("\nPress Enter to close.");
+                wait_for_keypress();
+                std::process::exit(1);
+            }
+        }
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            eprintln!("\nFor more information, try '--help'.");
+            std::process::exit(2);
+        }
     }
 }
 
@@ -61,7 +121,7 @@ fn check_stdin_size(actual: u64, max: u64) -> Result<()> {
     Ok(())
 }
 
-fn run() -> Result<()> {
+fn run(window_id_arg: &str) -> Result<()> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
     const MAX_STDIN_BYTES: u64 = 512 * 1024 * 1024; // 512 MB
@@ -69,7 +129,7 @@ fn run() -> Result<()> {
     check_reentry(env::var("KAKOUNE_SCROLLBACK").ok().as_deref())?;
 
     let pipe_data = kitty::parse_pipe_data()?;
-    let window_id = kitty::window_id()?;
+    let window_id = kitty::parse_window_id(window_id_arg)?;
     let palette = kitty::get_palette(window_id);
     let mut stdin_data = Vec::new();
     std::io::stdin()
@@ -168,7 +228,7 @@ mod tests {
     fn check_stdin_size_within_limit() {
         assert!(check_stdin_size(0, 100).is_ok());
         assert!(check_stdin_size(99, 100).is_ok());
-        assert!(check_stdin_size(100, 100).is_ok()); // ちょうど制限 = OK
+        assert!(check_stdin_size(100, 100).is_ok()); // exactly at limit = OK
     }
 
     #[test]
@@ -683,5 +743,58 @@ mod tests {
             "1.10,1.10",
             "cursor should be at byte 10 (after 9 bytes of 日本語)"
         );
+    }
+
+    // --- parse_args ---
+
+    #[test]
+    fn parse_args_help_short() {
+        let args = vec!["ksb".into(), "-h".into()];
+        assert!(matches!(parse_args(&args), Ok(CliAction::ShowHelp)));
+    }
+
+    #[test]
+    fn parse_args_help_long() {
+        let args = vec!["ksb".into(), "--help".into()];
+        assert!(matches!(parse_args(&args), Ok(CliAction::ShowHelp)));
+    }
+
+    #[test]
+    fn parse_args_version_short() {
+        let args = vec!["ksb".into(), "-V".into()];
+        assert!(matches!(parse_args(&args), Ok(CliAction::ShowVersion)));
+    }
+
+    #[test]
+    fn parse_args_version_long() {
+        let args = vec!["ksb".into(), "--version".into()];
+        assert!(matches!(parse_args(&args), Ok(CliAction::ShowVersion)));
+    }
+
+    #[test]
+    fn parse_args_window_id() {
+        let args = vec!["ksb".into(), "42".into()];
+        assert!(matches!(
+            parse_args(&args),
+            Ok(CliAction::Run { window_id_arg }) if window_id_arg == "42"
+        ));
+    }
+
+    #[test]
+    fn parse_args_no_args() {
+        let args = vec!["ksb".into()];
+        assert!(parse_args(&args).is_err());
+    }
+
+    #[test]
+    fn parse_args_unknown_flag() {
+        let args = vec!["ksb".into(), "--foo".into()];
+        assert!(parse_args(&args).is_err());
+    }
+
+    #[test]
+    fn parse_args_help_with_trailing() {
+        let args = vec!["ksb".into(), "--help".into(), "123".into()];
+        assert!(matches!(parse_args(&args), Ok(CliAction::ShowHelp)));
     }
 }

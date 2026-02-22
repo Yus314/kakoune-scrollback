@@ -106,14 +106,6 @@ pub fn parse_window_id(s: &str) -> Result<WindowId> {
     Ok(WindowId(id))
 }
 
-/// Read the target window ID from the first CLI argument and delegate to `parse_window_id`
-pub fn window_id() -> Result<WindowId> {
-    let val = std::env::args()
-        .nth(1)
-        .context("missing target window ID argument (update your kitty.conf — see README)")?;
-    parse_window_id(&val)
-}
-
 /// Query the running Kitty instance for its color palette.
 /// Falls back to `DEFAULT_PALETTE` with a warning if the command fails.
 pub fn get_palette(window_id: WindowId) -> [u8; 48] {
