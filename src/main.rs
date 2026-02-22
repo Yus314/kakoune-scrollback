@@ -75,8 +75,7 @@ fn run() -> Result<()> {
 
     let tmp_path = tmp_dir.keep();
 
-    let init_path_escaped =
-        output::escape_kak_single_quote(&init_path.display().to_string());
+    let init_path_escaped = output::escape_kak_single_quote(&init_path.display().to_string());
 
     let err = std::process::Command::new("kak")
         .env("KAKOUNE_SCROLLBACK", "1")

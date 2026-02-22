@@ -495,8 +495,7 @@ mod tests {
 
         // Kakoune contexts should use '' escaping
         assert!(
-            content.contains("scrollback_tmp_dir 'it''s-a-dir'")
-                || content.contains("it''s-a-dir"),
+            content.contains("scrollback_tmp_dir 'it''s-a-dir'") || content.contains("it''s-a-dir"),
             "Kakoune single quotes should be escaped with '', got:\n{content}"
         );
 
