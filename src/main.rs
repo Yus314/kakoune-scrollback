@@ -34,8 +34,9 @@ fn run_core(
     window_id: kitty::WindowId,
     palette: &[u8; 48],
     stdin_data: &[u8],
+    max_scrollback_lines: usize,
 ) -> Result<(tempfile::TempDir, std::path::PathBuf, std::path::PathBuf)> {
-    let screen = terminal::process_bytes(pipe_data, stdin_data, palette);
+    let screen = terminal::process_bytes(pipe_data, stdin_data, palette, max_scrollback_lines);
 
     let tmp_dir = tempfile::Builder::new()
         .prefix("ksb-")
@@ -71,7 +72,18 @@ fn run() -> Result<()> {
         "scrollback input exceeds {MAX_STDIN_BYTES} bytes, aborting"
     );
 
-    let (tmp_dir, text_path, init_path) = run_core(&pipe_data, window_id, &palette, &stdin_data)?;
+    let max_scrollback_lines: usize = env::var("KAKOUNE_SCROLLBACK_MAX_LINES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(terminal::DEFAULT_MAX_SCROLLBACK_LINES);
+
+    let (tmp_dir, text_path, init_path) = run_core(
+        &pipe_data,
+        window_id,
+        &palette,
+        &stdin_data,
+        max_scrollback_lines,
+    )?;
 
     let tmp_path = tmp_dir.keep();
 
@@ -113,8 +125,14 @@ mod tests {
         palette: &[u8; 48],
         stdin_data: &[u8],
     ) -> (String, String, String, tempfile::TempDir) {
-        let (tmp_dir, text_path, init_path) =
-            run_core(pipe_data, window_id, palette, stdin_data).unwrap();
+        let (tmp_dir, text_path, init_path) = run_core(
+            pipe_data,
+            window_id,
+            palette,
+            stdin_data,
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
         let ranges_path = tmp_dir.path().join("ranges.kak");
         let text = std::fs::read_to_string(&text_path).unwrap();
         let ranges = std::fs::read_to_string(&ranges_path).unwrap();
@@ -144,8 +162,14 @@ mod tests {
     #[test]
     fn pipeline_creates_expected_files() {
         let pd = default_pipe_data();
-        let (tmp_dir, text_path, init_path) =
-            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"hello").unwrap();
+        let (tmp_dir, text_path, init_path) = run_core(
+            &pd,
+            wid("1"),
+            &palette::DEFAULT_PALETTE,
+            b"hello",
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
         let ranges_path = tmp_dir.path().join("ranges.kak");
 
         assert!(text_path.exists());
@@ -163,7 +187,14 @@ mod tests {
     #[test]
     fn pipeline_tmpdir_not_kept() {
         let pd = default_pipe_data();
-        let (tmp_dir, _, _) = run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"hello").unwrap();
+        let (tmp_dir, _, _) = run_core(
+            &pd,
+            wid("1"),
+            &palette::DEFAULT_PALETTE,
+            b"hello",
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
         let path = tmp_dir.path().to_path_buf();
         assert!(path.exists());
         drop(tmp_dir);
@@ -273,8 +304,14 @@ mod tests {
     #[test]
     fn pipeline_init_references_actual_tmpdir() {
         let pd = default_pipe_data();
-        let (tmp_dir, _, init_path) =
-            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"hello").unwrap();
+        let (tmp_dir, _, init_path) = run_core(
+            &pd,
+            wid("1"),
+            &palette::DEFAULT_PALETTE,
+            b"hello",
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
         let init = std::fs::read_to_string(&init_path).unwrap();
         let tmp_dir_str = tmp_dir.path().to_str().unwrap();
 
@@ -412,8 +449,14 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let (tmp_dir, text_path, init_path) =
-            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"hello\r\nworld").unwrap();
+        let (tmp_dir, text_path, init_path) = run_core(
+            &pd,
+            wid("1"),
+            &palette::DEFAULT_PALETTE,
+            b"hello\r\nworld",
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
@@ -424,8 +467,14 @@ mod tests {
         }
         let pd = default_pipe_data();
         let input = b"\x1b[31mRed\x1b[0m \x1b[32mGreen\x1b[0m \x1b[34mBlue\x1b[0m";
-        let (tmp_dir, text_path, init_path) =
-            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, input).unwrap();
+        let (tmp_dir, text_path, init_path) = run_core(
+            &pd,
+            wid("1"),
+            &palette::DEFAULT_PALETTE,
+            input,
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
@@ -436,8 +485,14 @@ mod tests {
         }
         let pd = default_pipe_data();
         let input = "日本語テスト".as_bytes();
-        let (tmp_dir, text_path, init_path) =
-            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, input).unwrap();
+        let (tmp_dir, text_path, init_path) = run_core(
+            &pd,
+            wid("1"),
+            &palette::DEFAULT_PALETTE,
+            input,
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
@@ -456,8 +511,14 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let (tmp_dir, text_path, init_path) =
-            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, &input).unwrap();
+        let (tmp_dir, text_path, init_path) = run_core(
+            &pd,
+            wid("1"),
+            &palette::DEFAULT_PALETTE,
+            &input,
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
@@ -477,8 +538,14 @@ mod tests {
             input.extend_from_slice(b"\x1b[0m\r\n");
         }
         let pd = default_pipe_data();
-        let (tmp_dir, text_path, init_path) =
-            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, &input).unwrap();
+        let (tmp_dir, text_path, init_path) = run_core(
+            &pd,
+            wid("1"),
+            &palette::DEFAULT_PALETTE,
+            &input,
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
@@ -488,8 +555,14 @@ mod tests {
             return;
         }
         let pd = default_pipe_data();
-        let (tmp_dir, text_path, init_path) =
-            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"").unwrap();
+        let (tmp_dir, text_path, init_path) = run_core(
+            &pd,
+            wid("1"),
+            &palette::DEFAULT_PALETTE,
+            b"",
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
@@ -500,8 +573,14 @@ mod tests {
         }
         let pd = default_pipe_data();
         let input = b"\x1b[31mRed text here\x1b[0m";
-        let (tmp_dir, text_path, init_path) =
-            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, input).unwrap();
+        let (tmp_dir, text_path, init_path) = run_core(
+            &pd,
+            wid("1"),
+            &palette::DEFAULT_PALETTE,
+            input,
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
         let plugin = plugin_path();
         let result_dir = tempfile::tempdir().unwrap();
         let result_path = result_dir.path().join("colors_result");
@@ -536,8 +615,14 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let (tmp_dir, text_path, init_path) =
-            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"hello\r\nworld").unwrap();
+        let (tmp_dir, text_path, init_path) = run_core(
+            &pd,
+            wid("1"),
+            &palette::DEFAULT_PALETTE,
+            b"hello\r\nworld",
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
         let desc = validate_cursor_in_kak(&text_path, &init_path, tmp_dir.path());
         assert_eq!(
             desc.trim(),
@@ -558,8 +643,14 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let (tmp_dir, text_path, init_path) =
-            run_core(&pd, wid("1"), &palette::DEFAULT_PALETTE, input).unwrap();
+        let (tmp_dir, text_path, init_path) = run_core(
+            &pd,
+            wid("1"),
+            &palette::DEFAULT_PALETTE,
+            input,
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
         let desc = validate_cursor_in_kak(&text_path, &init_path, tmp_dir.path());
         assert_eq!(
             desc.trim(),

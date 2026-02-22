@@ -310,7 +310,12 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let screen = terminal::process_bytes(&pd, input, &crate::palette::DEFAULT_PALETTE);
+        let screen = terminal::process_bytes(
+            &pd,
+            input,
+            &crate::palette::DEFAULT_PALETTE,
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        );
 
         // terminal.rs produces exclusive end_byte
         let span = &screen.lines[0].spans[0];
