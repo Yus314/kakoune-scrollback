@@ -23,8 +23,11 @@ pub struct KittyPipeData {
 }
 
 /// Pure function: parse from string (separated for testability)
-/// Format: `scrolled_by[,cursor_x]:cursor_y:lines,columns`
+/// Format (Kitty): `{scrolled_by}:{cursor_x},{cursor_y}:{lines},{columns}`
+/// cursor_x, cursor_y are 1-based (top-left = 1,1); converted to 0-based internally.
 pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
+    let s = s.trim();
+
     let (part0, rest) = s
         .split_once(':')
         .context("KITTY_PIPE_DATA: expected 3 colon-separated parts")?;
@@ -35,28 +38,29 @@ pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
         bail!("KITTY_PIPE_DATA: expected 3 colon-separated parts");
     }
 
-    let (scrolled_by_str, cursor_x_str) = match part0.split_once(',') {
-        None => (part0, "0"),
-        Some((a, b)) => {
-            if b.contains(',') {
-                bail!("KITTY_PIPE_DATA: invalid first part '{part0}'");
-            }
-            (a, b)
-        }
-    };
-
-    // Validate scrolled_by is numeric even though we don't use the value
-    let _scrolled_by: usize = scrolled_by_str
+    // part0: scrolled_by (validate as numeric, don't use)
+    if part0.contains(',') {
+        bail!("KITTY_PIPE_DATA: invalid scrolled_by '{part0}' (unexpected comma)");
+    }
+    let _scrolled_by: usize = part0
         .parse()
         .context("KITTY_PIPE_DATA: invalid scrolled_by")?;
 
-    let cursor_y: usize = part1
-        .split(',')
-        .next()
-        .context("KITTY_PIPE_DATA: missing cursor_y")?
+    // part1: cursor_x,cursor_y (1-based)
+    let (cx_str, cy_str) = part1.split_once(',').with_context(|| {
+        format!("KITTY_PIPE_DATA: expected 'cursor_x,cursor_y' in second part, got '{part1}'")
+    })?;
+    if cy_str.contains(',') {
+        bail!("KITTY_PIPE_DATA: expected 'cursor_x,cursor_y' in second part, got '{part1}'");
+    }
+    let cursor_x_1: usize = cx_str
+        .parse()
+        .context("KITTY_PIPE_DATA: invalid cursor_x")?;
+    let cursor_y_1: usize = cy_str
         .parse()
         .context("KITTY_PIPE_DATA: invalid cursor_y")?;
 
+    // part2: lines,columns
     let (lines_str, columns_str) = part2.split_once(',').with_context(|| {
         format!("KITTY_PIPE_DATA: expected 'lines,columns' in third part, got '{part2}'")
     })?;
@@ -77,21 +81,26 @@ pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
     if columns == 0 {
         bail!("KITTY_PIPE_DATA: columns must be at least 1");
     }
-
-    let cursor_x: usize = cursor_x_str
-        .parse()
-        .context("KITTY_PIPE_DATA: invalid cursor_x")?;
-
-    if cursor_y >= usize::from(lines) {
-        bail!("KITTY_PIPE_DATA: cursor_y ({cursor_y}) must be less than lines ({lines})");
+    if cursor_x_1 == 0 {
+        bail!("KITTY_PIPE_DATA: cursor_x must be at least 1 (1-based)");
     }
-    if cursor_x >= usize::from(columns) {
-        bail!("KITTY_PIPE_DATA: cursor_x ({cursor_x}) must be less than columns ({columns})");
+    if cursor_y_1 == 0 {
+        bail!("KITTY_PIPE_DATA: cursor_y must be at least 1 (1-based)");
+    }
+    if cursor_x_1 > usize::from(columns) {
+        bail!(
+            "KITTY_PIPE_DATA: cursor_x ({cursor_x_1}) must be at most columns ({columns})"
+        );
+    }
+    if cursor_y_1 > usize::from(lines) {
+        bail!(
+            "KITTY_PIPE_DATA: cursor_y ({cursor_y_1}) must be at most lines ({lines})"
+        );
     }
 
     Ok(KittyPipeData {
-        cursor_x,
-        cursor_y,
+        cursor_x: cursor_x_1 - 1,
+        cursor_y: cursor_y_1 - 1,
         lines,
         columns,
     })
@@ -148,7 +157,7 @@ mod tests {
 
     #[test]
     fn parse_pipe_data_valid() {
-        let data = parse_pipe_data_str("42,5:23:50,120").unwrap();
+        let data = parse_pipe_data_str("42:6,24:50,120").unwrap();
         assert_eq!(data.cursor_x, 5);
         assert_eq!(data.cursor_y, 23);
         assert_eq!(data.lines, 50);
@@ -157,7 +166,7 @@ mod tests {
 
     #[test]
     fn parse_pipe_data_zeros() {
-        let data = parse_pipe_data_str("0,0:0:24,80").unwrap();
+        let data = parse_pipe_data_str("0:1,1:24,80").unwrap();
         assert_eq!(data.cursor_x, 0);
         assert_eq!(data.cursor_y, 0);
         assert_eq!(data.lines, 24);
@@ -166,7 +175,7 @@ mod tests {
 
     #[test]
     fn parse_pipe_data_no_scroll() {
-        let data = parse_pipe_data_str("0,3:10:24,80").unwrap();
+        let data = parse_pipe_data_str("0:4,11:24,80").unwrap();
         assert_eq!(data.cursor_x, 3);
         assert_eq!(data.cursor_y, 10);
     }
@@ -180,7 +189,7 @@ mod tests {
 
     #[test]
     fn parse_pipe_data_non_numeric() {
-        assert!(parse_pipe_data_str("abc,0:0:24,80").is_err());
+        assert!(parse_pipe_data_str("abc:1,1:24,80").is_err());
     }
 
     #[test]
@@ -227,7 +236,7 @@ mod tests {
 
     #[test]
     fn parse_pipe_data_rejects_zero_lines() {
-        let err = parse_pipe_data_str("0,0:0:0,80");
+        let err = parse_pipe_data_str("0:1,1:0,80");
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
         assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
@@ -236,7 +245,7 @@ mod tests {
 
     #[test]
     fn parse_pipe_data_rejects_zero_columns() {
-        let err = parse_pipe_data_str("0,0:0:24,0");
+        let err = parse_pipe_data_str("0:1,1:24,0");
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
         assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
@@ -245,7 +254,7 @@ mod tests {
 
     #[test]
     fn parse_pipe_data_rejects_cursor_y_out_of_range() {
-        let err = parse_pipe_data_str("0,0:24:24,80");
+        let err = parse_pipe_data_str("0:1,25:24,80");
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
         assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
@@ -254,7 +263,7 @@ mod tests {
 
     #[test]
     fn parse_pipe_data_rejects_cursor_x_out_of_range() {
-        let err = parse_pipe_data_str("0,80:0:24,80");
+        let err = parse_pipe_data_str("0:81,1:24,80");
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
         assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
@@ -263,17 +272,64 @@ mod tests {
 
     #[test]
     fn parse_pipe_data_cursor_at_max_valid_position() {
-        let data = parse_pipe_data_str("0,79:23:24,80").unwrap();
+        let data = parse_pipe_data_str("0:80,24:24,80").unwrap();
         assert_eq!(data.cursor_x, 79);
         assert_eq!(data.cursor_y, 23);
     }
 
     #[test]
     fn parse_pipe_data_rejects_huge_cursor_y() {
-        let err = parse_pipe_data_str("0,0:9999:24,80");
+        let err = parse_pipe_data_str("0:1,9999:24,80");
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
         assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
         assert!(msg.contains("cursor_y"), "error should mention cursor_y: {msg}");
+    }
+
+    #[test]
+    fn parse_pipe_data_rejects_cursor_x_zero() {
+        let err = parse_pipe_data_str("0:0,1:24,80");
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
+        assert!(msg.contains("cursor_x"), "error should mention cursor_x: {msg}");
+    }
+
+    #[test]
+    fn parse_pipe_data_rejects_cursor_y_zero() {
+        let err = parse_pipe_data_str("0:1,0:24,80");
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
+        assert!(msg.contains("cursor_y"), "error should mention cursor_y: {msg}");
+    }
+
+    #[test]
+    fn parse_pipe_data_rejects_missing_cursor_comma() {
+        assert!(parse_pipe_data_str("0:1:24,80").is_err());
+    }
+
+    #[test]
+    fn parse_pipe_data_rejects_extra_cursor_comma() {
+        assert!(parse_pipe_data_str("0:1,2,3:24,80").is_err());
+    }
+
+    #[test]
+    fn parse_pipe_data_rejects_non_numeric_cursor_x() {
+        assert!(parse_pipe_data_str("0:x,1:24,80").is_err());
+    }
+
+    #[test]
+    fn parse_pipe_data_rejects_non_numeric_cursor_y() {
+        assert!(parse_pipe_data_str("0:1,y:24,80").is_err());
+    }
+
+    #[test]
+    fn parse_pipe_data_trims_whitespace() {
+        let data = parse_pipe_data_str("0:1,1:24,80\n").unwrap();
+        assert_eq!(data.cursor_x, 0);
+        assert_eq!(data.cursor_y, 0);
+        assert_eq!(data.lines, 24);
+        assert_eq!(data.columns, 80);
     }
 }
