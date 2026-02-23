@@ -195,6 +195,8 @@ define-command -hidden kakoune-scrollback-compose-kitty %{
 # tmux backend: floating popup (tmux 3.3+)
 # display-popup -E blocks until the popup closes, so we must background it
 # to release the Kakoune session lock (same pattern as kitty --no-response).
+# Stdout/stderr must be redirected to /dev/null — otherwise the backgrounded
+# child inherits the pipe fd to Kakoune, keeping it open and blocking %sh{}.
 define-command -hidden kakoune-scrollback-compose-tmux %{
     nop %sh{
         tmux display-popup -E \
@@ -206,7 +208,7 @@ define-command -hidden kakoune-scrollback-compose-tmux %{
                 buffer *compose*
                 kakoune-scrollback-setup-compose-keymaps
                 execute-keys gi
-            ' &
+            ' >/dev/null 2>&1 &
     }
 }
 
