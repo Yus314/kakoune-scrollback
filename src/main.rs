@@ -2,6 +2,7 @@ mod kitty;
 mod output;
 mod palette;
 mod terminal;
+mod tmux;
 
 use anyhow::{bail, Context, Result};
 use std::env;
@@ -99,7 +100,7 @@ fn main() {
     match parse_args(&args) {
         Ok(CliAction::ShowVersion) => print_version(),
         Ok(CliAction::ShowHelp) => print_help(),
-        Ok(CliAction::GenerateTmuxConf) => generate_tmux_conf(),
+        Ok(CliAction::GenerateTmuxConf) => tmux::generate_conf(),
         Ok(CliAction::RunKitty { window_id_arg }) => {
             if let Err(e) = run_kitty(&window_id_arg) {
                 eprintln!("kakoune-scrollback: {e:#}");
@@ -242,39 +243,9 @@ fn run_kitty(window_id_arg: &str) -> Result<()> {
     exec_kak(tmp_dir, &text_path, &init_path)
 }
 
-/// Insert CR before every bare LF so the vt100 parser resets the column.
-/// `tmux capture-pane -e -p` uses LF-only line endings.
-fn normalize_tmux_capture(data: &mut Vec<u8>) {
-    // Pass 1: count bare LFs
-    let bare_lf_count = data
-        .iter()
-        .enumerate()
-        .filter(|&(i, &b)| b == b'\n' && (i == 0 || data[i - 1] != b'\r'))
-        .count();
-    if bare_lf_count == 0 {
-        return;
-    }
-
-    // Pass 2: expand in-place from the end
-    let old_len = data.len();
-    let new_len = old_len + bare_lf_count;
-    data.resize(new_len, 0);
-    let mut w = new_len;
-    let mut r = old_len;
-    while r > 0 {
-        r -= 1;
-        w -= 1;
-        data[w] = data[r];
-        if data[r] == b'\n' && (r == 0 || data[r - 1] != b'\r') {
-            w -= 1;
-            data[w] = b'\r';
-        }
-    }
-}
-
 fn run_tmux(pane_id: &str) -> Result<()> {
     check_reentry(env::var("KAKOUNE_SCROLLBACK").ok().as_deref())?;
-    check_tmux_version()?;
+    tmux::check_version()?;
 
     let pipe_data_str = env::var("SCROLLBACK_PIPE_DATA")
         .context("SCROLLBACK_PIPE_DATA not set (should be set by tmux keybinding)")?;
@@ -286,7 +257,7 @@ fn run_tmux(pane_id: &str) -> Result<()> {
         .context("Set KAKOUNE_SCROLLBACK_MAX_LINES to limit processing, \
                   or reduce scrollback history in tmux (set-option -g history-limit).")?;
 
-    normalize_tmux_capture(&mut stdin_data);
+    tmux::normalize_capture(&mut stdin_data);
 
     let max_scrollback_lines = resolve_max_scrollback_lines();
 
@@ -329,53 +300,6 @@ fn exec_kak(
     let _ = std::fs::remove_dir_all(&tmp_path);
     Err(err).context("failed to exec kak")
 }
-
-/// Check that tmux >= 3.3 is available (needed for display-popup -b, -e, -T).
-fn check_tmux_version() -> Result<()> {
-    let output = std::process::Command::new("tmux")
-        .arg("-V")
-        .output()
-        .context("failed to run 'tmux -V' — is tmux installed?")?;
-    let version_str = String::from_utf8_lossy(&output.stdout);
-    let version_str = version_str.trim();
-    let stripped = version_str.strip_prefix("tmux ").unwrap_or(version_str);
-    let mut parts = stripped.split('.');
-    let major: u32 = parts.next().unwrap_or("0").parse().unwrap_or(0);
-    let minor_str = parts.next().unwrap_or("0");
-    let minor: u32 = minor_str
-        .trim_end_matches(|c: char| c.is_alphabetic())
-        .parse()
-        .unwrap_or(0);
-    if (major, minor) < (3, 3) {
-        bail!(
-            "tmux 3.3 or later is required (found '{stripped}'). \
-             display-popup -b, -e, -T were added in tmux 3.3."
-        );
-    }
-    Ok(())
-}
-
-/// Print recommended tmux.conf configuration to stdout.
-fn generate_tmux_conf() {
-    print!("{}", TMUX_CONF_SNIPPET);
-}
-
-const TMUX_CONF_SNIPPET: &str = r##"# kakoune-scrollback (requires tmux 3.3+)
-# Bind Prefix + H to open scrollback viewer
-bind-key H run-shell -b '                                              \
-    pane="#{pane_id}"                                                 ;\
-    cx=$(tmux display-message -p -t "$pane" "#{cursor_x}")            ;\
-    cy=$(tmux display-message -p -t "$pane" "#{cursor_y}")            ;\
-    h=$(tmux display-message -p -t "$pane" "#{pane_height}")          ;\
-    w=$(tmux display-message -p -t "$pane" "#{pane_width}")           ;\
-    tmpf=$(mktemp)                                                    ;\
-    tmux capture-pane -t "$pane" -e -p -S - > "$tmpf"                 ;\
-    tmux new-window -n scrollback                                       \
-        "SCROLLBACK_PIPE_DATA=\"0:$((cx+1)),$((cy+1)):${h},${w}\"       \
-         kakoune-scrollback --tmux-pane $pane < \"$tmpf\"             ;  \
-         rm -f \"$tmpf\""                                               \
-'
-"##;
 
 #[cfg(test)]
 mod tests {
@@ -1251,67 +1175,12 @@ mod tests {
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
-    // --- generate_tmux_conf ---
-
-    #[test]
-    fn tmux_conf_snippet_is_not_empty() {
-        assert!(!TMUX_CONF_SNIPPET.is_empty());
-        assert!(TMUX_CONF_SNIPPET.contains("bind-key"));
-        assert!(TMUX_CONF_SNIPPET.contains("kakoune-scrollback --tmux-pane"));
-        assert!(TMUX_CONF_SNIPPET.contains("SCROLLBACK_PIPE_DATA"));
-        assert!(TMUX_CONF_SNIPPET.contains("capture-pane"));
-    }
-
-    // --- normalize_tmux_capture ---
-
-    #[test]
-    fn normalize_bare_lf_to_crlf() {
-        let mut data = b"line1\nline2\nline3\n".to_vec();
-        normalize_tmux_capture(&mut data);
-        assert_eq!(data, b"line1\r\nline2\r\nline3\r\n");
-    }
-
-    #[test]
-    fn normalize_preserves_existing_crlf() {
-        let mut data = b"line1\r\nline2\r\n".to_vec();
-        normalize_tmux_capture(&mut data);
-        assert_eq!(data, b"line1\r\nline2\r\n");
-    }
-
-    #[test]
-    fn normalize_mixed_lf_and_crlf() {
-        let mut data = b"line1\nline2\r\nline3\n".to_vec();
-        normalize_tmux_capture(&mut data);
-        assert_eq!(data, b"line1\r\nline2\r\nline3\r\n");
-    }
-
-    #[test]
-    fn normalize_empty_input() {
-        let mut data = Vec::new();
-        normalize_tmux_capture(&mut data);
-        assert!(data.is_empty());
-    }
-
-    #[test]
-    fn normalize_leading_lf() {
-        let mut data = b"\nfoo".to_vec();
-        normalize_tmux_capture(&mut data);
-        assert_eq!(data, b"\r\nfoo");
-    }
-
-    #[test]
-    fn normalize_sgr_with_lf() {
-        let mut data = b"\x1b[31mRed\x1b[0m\nNext line\n".to_vec();
-        normalize_tmux_capture(&mut data);
-        assert_eq!(data, b"\x1b[31mRed\x1b[0m\r\nNext line\r\n");
-    }
-
-    // --- normalize_tmux_capture integration tests ---
+    // --- normalize + pipeline integration tests ---
 
     #[test]
     fn normalize_then_pipeline_lines_separate() {
         let mut input = b"line one\nline two\n".to_vec();
-        normalize_tmux_capture(&mut input);
+        tmux::normalize_capture(&mut input);
         let pd = PipeData {
             cursor_x: 0,
             cursor_y: 0,
@@ -1330,7 +1199,7 @@ mod tests {
     #[test]
     fn normalize_then_pipeline_colored() {
         let mut input = b"\x1b[31mRed\x1b[0m\n\x1b[32mGreen\x1b[0m\n".to_vec();
-        normalize_tmux_capture(&mut input);
+        tmux::normalize_capture(&mut input);
         let pd = default_pipe_data();
         let (text, ranges, _init) = process_and_render(
             &pd,
