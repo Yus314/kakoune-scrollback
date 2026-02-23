@@ -203,6 +203,36 @@ fn run_kitty(window_id_arg: &str) -> Result<()> {
     exec_kak(tmp_dir, &text_path, &init_path)
 }
 
+/// Insert CR before every bare LF so the vt100 parser resets the column.
+/// `tmux capture-pane -e -p` uses LF-only line endings.
+fn normalize_tmux_capture(data: &mut Vec<u8>) {
+    // Pass 1: count bare LFs
+    let bare_lf_count = data
+        .iter()
+        .enumerate()
+        .filter(|&(i, &b)| b == b'\n' && (i == 0 || data[i - 1] != b'\r'))
+        .count();
+    if bare_lf_count == 0 {
+        return;
+    }
+
+    // Pass 2: expand in-place from the end
+    let old_len = data.len();
+    let new_len = old_len + bare_lf_count;
+    data.resize(new_len, 0);
+    let mut w = new_len;
+    let mut r = old_len;
+    while r > 0 {
+        r -= 1;
+        w -= 1;
+        data[w] = data[r];
+        if data[r] == b'\n' && (r == 0 || data[r - 1] != b'\r') {
+            w -= 1;
+            data[w] = b'\r';
+        }
+    }
+}
+
 fn run_tmux(pane_id: &str) -> Result<()> {
     use std::io::Read;
 
@@ -227,6 +257,8 @@ fn run_tmux(pane_id: &str) -> Result<()> {
             MAX_STDIN_BYTES
         );
     }
+
+    normalize_tmux_capture(&mut stdin_data);
 
     let max_scrollback_lines: usize = env::var("KAKOUNE_SCROLLBACK_MAX_LINES")
         .ok()
@@ -1087,5 +1119,111 @@ mod tests {
         assert!(TMUX_CONF_SNIPPET.contains("kakoune-scrollback --tmux-pane"));
         assert!(TMUX_CONF_SNIPPET.contains("SCROLLBACK_PIPE_DATA"));
         assert!(TMUX_CONF_SNIPPET.contains("capture-pane"));
+    }
+
+    // --- normalize_tmux_capture ---
+
+    #[test]
+    fn normalize_bare_lf_to_crlf() {
+        let mut data = b"line1\nline2\nline3\n".to_vec();
+        normalize_tmux_capture(&mut data);
+        assert_eq!(data, b"line1\r\nline2\r\nline3\r\n");
+    }
+
+    #[test]
+    fn normalize_preserves_existing_crlf() {
+        let mut data = b"line1\r\nline2\r\n".to_vec();
+        normalize_tmux_capture(&mut data);
+        assert_eq!(data, b"line1\r\nline2\r\n");
+    }
+
+    #[test]
+    fn normalize_mixed_lf_and_crlf() {
+        let mut data = b"line1\nline2\r\nline3\n".to_vec();
+        normalize_tmux_capture(&mut data);
+        assert_eq!(data, b"line1\r\nline2\r\nline3\r\n");
+    }
+
+    #[test]
+    fn normalize_empty_input() {
+        let mut data = Vec::new();
+        normalize_tmux_capture(&mut data);
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn normalize_leading_lf() {
+        let mut data = b"\nfoo".to_vec();
+        normalize_tmux_capture(&mut data);
+        assert_eq!(data, b"\r\nfoo");
+    }
+
+    #[test]
+    fn normalize_sgr_with_lf() {
+        let mut data = b"\x1b[31mRed\x1b[0m\nNext line\n".to_vec();
+        normalize_tmux_capture(&mut data);
+        assert_eq!(data, b"\x1b[31mRed\x1b[0m\r\nNext line\r\n");
+    }
+
+    // --- normalize_tmux_capture integration tests ---
+
+    #[test]
+    fn normalize_then_pipeline_lines_separate() {
+        let mut input = b"line one\nline two\n".to_vec();
+        normalize_tmux_capture(&mut input);
+        let pd = PipeData {
+            cursor_x: 0,
+            cursor_y: 0,
+            lines: 24,
+            columns: 80,
+        };
+        let (text, _ranges, _init, _td) = run_and_read(
+            &pd,
+            &TargetId::Tmux("%0".to_string()),
+            &palette::DEFAULT_PALETTE,
+            &input,
+        );
+        assert_eq!(text, "line one\nline two\n");
+    }
+
+    #[test]
+    fn normalize_then_pipeline_colored() {
+        let mut input = b"\x1b[31mRed\x1b[0m\n\x1b[32mGreen\x1b[0m\n".to_vec();
+        normalize_tmux_capture(&mut input);
+        let pd = default_pipe_data();
+        let (text, ranges, _init, _td) = run_and_read(
+            &pd,
+            &TargetId::Tmux("%0".to_string()),
+            &palette::DEFAULT_PALETTE,
+            &input,
+        );
+        assert_eq!(text, "Red\nGreen\n");
+        assert!(ranges.contains("rgb:"));
+    }
+
+    /// Regression: without normalization, bare LF causes text to shift right
+    /// because the vt100 parser does not reset the column on bare LF.
+    #[test]
+    fn bare_lf_without_normalize_shifts_text() {
+        // Feed bare-LF input directly (no normalization)
+        let input = b"AAA\nBBB\n";
+        let pd = PipeData {
+            cursor_x: 0,
+            cursor_y: 0,
+            lines: 24,
+            columns: 80,
+        };
+        let (text, _ranges, _init, _td) = run_and_read(
+            &pd,
+            &TargetId::Tmux("%0".to_string()),
+            &palette::DEFAULT_PALETTE,
+            input,
+        );
+        // Without CR, "BBB" starts at column 3 (after "AAA"), producing "AAABBB"
+        // on the same or offset line rather than clean separate lines.
+        assert_ne!(
+            text, "AAA\nBBB\n",
+            "bare LF without normalization should NOT produce clean line separation"
+        );
     }
 }
