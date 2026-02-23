@@ -1,5 +1,4 @@
 use std::fmt::Write as FmtWrite;
-use std::io::Write;
 use std::path::Path;
 
 use anyhow::Result;
@@ -7,27 +6,31 @@ use anyhow::Result;
 use crate::terminal::ProcessedScreen;
 use crate::TargetId;
 
-/// Generate plain text file
-pub fn write_text(path: &Path, screen: &ProcessedScreen) -> Result<()> {
-    let mut f = std::fs::File::create(path)?;
+/// Render plain text to a writer
+pub fn write_text_to<W: std::io::Write>(w: &mut W, screen: &ProcessedScreen) -> Result<()> {
     for (i, line) in screen.lines.iter().enumerate() {
         if i > 0 {
-            f.write_all(b"\n")?;
+            w.write_all(b"\n")?;
         }
-        f.write_all(line.text.as_bytes())?;
+        w.write_all(line.text.as_bytes())?;
     }
-    // Ensure file ends with a newline
+    // Ensure output ends with a newline
     if !screen.lines.is_empty() {
-        f.write_all(b"\n")?;
+        w.write_all(b"\n")?;
     }
     Ok(())
 }
 
-/// Generate range-specs command file
-pub fn write_ranges(path: &Path, screen: &ProcessedScreen) -> Result<()> {
+/// Generate plain text file
+pub fn write_text(path: &Path, screen: &ProcessedScreen) -> Result<()> {
+    let mut f = std::fs::File::create(path)?;
+    write_text_to(&mut f, screen)
+}
+
+/// Render range-specs commands to a writer
+pub fn write_ranges_to<W: std::io::Write>(w: &mut W, screen: &ProcessedScreen) -> Result<()> {
     const MAX_CHUNK_SIZE: usize = 900_000; // ~900KB per command
 
-    let mut f = std::fs::File::create(path)?;
     let mut chunk = String::with_capacity(MAX_CHUNK_SIZE);
     chunk.push_str("set-option buffer scrollback_colors %val{timestamp}");
     let mut chunk_has_entries = false;
@@ -49,7 +52,7 @@ pub fn write_ranges(path: &Path, screen: &ProcessedScreen) -> Result<()> {
 
             // Flush chunk if adding this entry would exceed limit
             if chunk.len() + 1 + entry.len() > MAX_CHUNK_SIZE && chunk_has_entries {
-                writeln!(f, "{chunk}")?;
+                writeln!(w, "{chunk}")?;
                 chunk.clear();
                 chunk.push_str("set-option -add buffer scrollback_colors");
             }
@@ -61,10 +64,16 @@ pub fn write_ranges(path: &Path, screen: &ProcessedScreen) -> Result<()> {
     }
 
     if chunk_has_entries {
-        writeln!(f, "{chunk}")?;
+        writeln!(w, "{chunk}")?;
     }
 
     Ok(())
+}
+
+/// Generate range-specs command file
+pub fn write_ranges(path: &Path, screen: &ProcessedScreen) -> Result<()> {
+    let mut f = std::fs::File::create(path)?;
+    write_ranges_to(&mut f, screen)
 }
 
 /// Escape for Kakoune single-quoted strings (' → '')
@@ -84,14 +93,13 @@ fn escape_face(face: &str) -> String {
         .replace('\'', "''")
 }
 
-/// Generate Kakoune initialization script
-pub fn write_init_kak(
-    path: &Path,
+/// Render Kakoune initialization script to a String
+pub fn render_init_kak(
     screen: &ProcessedScreen,
     target: &TargetId,
     tmp_dir: &Path,
     ranges_path: &Path,
-) -> Result<()> {
+) -> Result<String> {
     let mut script = String::new();
     let tmp_dir_s = tmp_dir.display().to_string();
     let tmp_dir_kak = escape_kak_single_quote(&tmp_dir_s);
@@ -175,7 +183,18 @@ pub fn write_init_kak(
     writeln!(script, "    }}")?;
     writeln!(script, "}}")?;
 
-    std::fs::write(path, &script)?;
+    Ok(script)
+}
+
+/// Generate Kakoune initialization script file
+pub fn write_init_kak(
+    path: &Path,
+    screen: &ProcessedScreen,
+    target: &TargetId,
+    tmp_dir: &Path,
+    ranges_path: &Path,
+) -> Result<()> {
+    std::fs::write(path, render_init_kak(screen, target, tmp_dir, ranges_path)?)?;
     Ok(())
 }
 
@@ -225,10 +244,9 @@ mod tests {
             ],
             CursorPosition { line: 1, col: 1 },
         );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("text.txt");
-        write_text(&path, &screen).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let mut buf = Vec::new();
+        write_text_to(&mut buf, &screen).unwrap();
+        let content = String::from_utf8(buf).unwrap();
         assert_eq!(content, "Hello\nWorld\n");
     }
 
@@ -245,10 +263,9 @@ mod tests {
             }],
             CursorPosition { line: 1, col: 1 },
         );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ranges.kak");
-        write_ranges(&path, &screen).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let mut buf = Vec::new();
+        write_ranges_to(&mut buf, &screen).unwrap();
+        let content = String::from_utf8(buf).unwrap();
         assert!(content.contains("set-option buffer scrollback_colors"));
         assert!(content.contains("1.1,1.5|rgb:FF0000,default+b"));
     }
@@ -262,10 +279,9 @@ mod tests {
             }],
             CursorPosition { line: 1, col: 1 },
         );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ranges.kak");
-        write_ranges(&path, &screen).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let mut buf = Vec::new();
+        write_ranges_to(&mut buf, &screen).unwrap();
+        let content = String::from_utf8(buf).unwrap();
         assert!(content.is_empty());
     }
 
@@ -285,18 +301,13 @@ mod tests {
             }],
             CursorPosition { line: 5, col: 3 },
         );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("init.kak");
-        let ranges_path = dir.path().join("ranges.kak");
-        write_init_kak(
-            &path,
+        let content = render_init_kak(
             &screen,
             &kitty_target("42"),
-            dir.path(),
-            &ranges_path,
+            Path::new("/tmp/ksb-fake"),
+            Path::new("/tmp/ksb-fake/ranges.kak"),
         )
         .unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
 
         assert!(content.contains("scrollback_backend 'kitty'"));
         assert!(content.contains("scrollback_kitty_window_id '42'"));
@@ -323,11 +334,13 @@ mod tests {
             CursorPosition { line: 27, col: 1 },
             22,
         );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("init.kak");
-        let ranges_path = dir.path().join("ranges.kak");
-        write_init_kak(&path, &screen, &kitty_target("1"), dir.path(), &ranges_path).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content = render_init_kak(
+            &screen,
+            &kitty_target("1"),
+            Path::new("/tmp/ksb-fake"),
+            Path::new("/tmp/ksb-fake/ranges.kak"),
+        )
+        .unwrap();
 
         // Should contain viewport positioning with vt
         assert!(
@@ -381,10 +394,9 @@ mod tests {
             }],
             CursorPosition { line: 1, col: 1 },
         );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ranges.kak");
-        write_ranges(&path, &screen).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let mut buf = Vec::new();
+        write_ranges_to(&mut buf, &screen).unwrap();
+        let content = String::from_utf8(buf).unwrap();
 
         let output_lines: Vec<&str> = content.lines().collect();
         assert!(
@@ -423,10 +435,9 @@ mod tests {
         assert_eq!(span.end_byte, 6); // exclusive: "Hello" = 5 bytes
 
         // write_ranges converts to inclusive end (end_byte - 1)
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ranges.kak");
-        write_ranges(&path, &screen).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let mut buf = Vec::new();
+        write_ranges_to(&mut buf, &screen).unwrap();
+        let content = String::from_utf8(buf).unwrap();
 
         // Output should use inclusive end: 6 - 1 = 5
         assert!(content.contains("1.1,1.5|"));
@@ -437,10 +448,9 @@ mod tests {
     #[test]
     fn write_text_empty_screen() {
         let screen = make_screen(vec![], CursorPosition { line: 1, col: 1 });
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("text.txt");
-        write_text(&path, &screen).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let mut buf = Vec::new();
+        write_text_to(&mut buf, &screen).unwrap();
+        let content = String::from_utf8(buf).unwrap();
         assert_eq!(content, "");
     }
 
@@ -469,10 +479,9 @@ mod tests {
             }],
             CursorPosition { line: 1, col: 1 },
         );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ranges.kak");
-        write_ranges(&path, &screen).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let mut buf = Vec::new();
+        write_ranges_to(&mut buf, &screen).unwrap();
+        let content = String::from_utf8(buf).unwrap();
 
         // All spans should be in one set-option command
         assert_eq!(content.lines().count(), 1);
@@ -512,10 +521,9 @@ mod tests {
             ],
             CursorPosition { line: 1, col: 1 },
         );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ranges.kak");
-        write_ranges(&path, &screen).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let mut buf = Vec::new();
+        write_ranges_to(&mut buf, &screen).unwrap();
+        let content = String::from_utf8(buf).unwrap();
 
         assert!(content.contains("1.1,1.3|rgb:FF0000,default"));
         assert!(content.contains("2.1,2.5|rgb:00FF00,default"));
@@ -533,10 +541,9 @@ mod tests {
             }],
             CursorPosition { line: 1, col: 1 },
         );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("text.txt");
-        write_text(&path, &screen).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let mut buf = Vec::new();
+        write_text_to(&mut buf, &screen).unwrap();
+        let content = String::from_utf8(buf).unwrap();
         assert_eq!(content, "\n");
     }
 
@@ -589,18 +596,15 @@ mod tests {
             }],
             CursorPosition { line: 1, col: 1 },
         );
-        let dir = tempfile::tempdir().unwrap();
-        // Create a subdirectory with a single quote in the name
-        let evil_dir = dir.path().join("it's-a-dir");
-        std::fs::create_dir_all(&evil_dir).unwrap();
-        let path = evil_dir.join("init.kak");
+        let evil_dir = Path::new("/tmp/it's-a-dir");
         let ranges_path = evil_dir.join("ranges.kak");
-        write_init_kak(&path, &screen, &kitty_target("42"), &evil_dir, &ranges_path).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content =
+            render_init_kak(&screen, &kitty_target("42"), evil_dir, &ranges_path).unwrap();
 
         // Kakoune contexts should use '' escaping
         assert!(
-            content.contains("scrollback_tmp_dir 'it''s-a-dir'") || content.contains("it''s-a-dir"),
+            content.contains("scrollback_tmp_dir '/tmp/it''s-a-dir'")
+                || content.contains("it''s-a-dir"),
             "Kakoune single quotes should be escaped with '', got:\n{content}"
         );
 
@@ -635,18 +639,13 @@ mod tests {
                 col: 50,
             },
         );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("init.kak");
-        let ranges_path = dir.path().join("ranges.kak");
-        write_init_kak(
-            &path,
+        let content = render_init_kak(
             &screen,
             &kitty_target("42"),
-            dir.path(),
-            &ranges_path,
+            Path::new("/tmp/ksb-fake"),
+            Path::new("/tmp/ksb-fake/ranges.kak"),
         )
         .unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("select 1000.50,1000.50"));
     }
 
@@ -661,12 +660,14 @@ mod tests {
             }],
             CursorPosition { line: 1, col: 1 },
         );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("init.kak");
-        let ranges_path = dir.path().join("ranges.kak");
         let target = TargetId::Tmux("%5".to_string());
-        write_init_kak(&path, &screen, &target, dir.path(), &ranges_path).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content = render_init_kak(
+            &screen,
+            &target,
+            Path::new("/tmp/ksb-fake"),
+            Path::new("/tmp/ksb-fake/ranges.kak"),
+        )
+        .unwrap();
 
         assert!(content.contains("scrollback_backend 'tmux'"));
         assert!(content.contains("scrollback_tmux_pane_id '%5'"));
@@ -685,12 +686,14 @@ mod tests {
             }],
             CursorPosition { line: 1, col: 1 },
         );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("init.kak");
-        let ranges_path = dir.path().join("ranges.kak");
         let target = TargetId::Tmux("it's".to_string());
-        write_init_kak(&path, &screen, &target, dir.path(), &ranges_path).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content = render_init_kak(
+            &screen,
+            &target,
+            Path::new("/tmp/ksb-fake"),
+            Path::new("/tmp/ksb-fake/ranges.kak"),
+        )
+        .unwrap();
 
         assert!(
             content.contains("scrollback_tmux_pane_id 'it''s'"),
@@ -707,11 +710,13 @@ mod tests {
             }],
             CursorPosition { line: 1, col: 1 },
         );
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("init.kak");
-        let ranges_path = dir.path().join("ranges.kak");
-        write_init_kak(&path, &screen, &kitty_target("1"), dir.path(), &ranges_path).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content = render_init_kak(
+            &screen,
+            &kitty_target("1"),
+            Path::new("/tmp/ksb-fake"),
+            Path::new("/tmp/ksb-fake/ranges.kak"),
+        )
+        .unwrap();
 
         assert!(content.contains("scrollback_backend 'kitty'"));
         assert!(content.contains("scrollback_kitty_window_id '1'"));

@@ -138,15 +138,19 @@ fn check_reentry(env_val: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn run_core(
+fn process_screen(
     pipe_data: &kitty::PipeData,
-    target: &TargetId,
     palette: &[u8; 48],
     stdin_data: &[u8],
     max_scrollback_lines: usize,
-) -> Result<(tempfile::TempDir, std::path::PathBuf, std::path::PathBuf)> {
-    let screen = terminal::process_bytes(pipe_data, stdin_data, palette, max_scrollback_lines);
+) -> terminal::ProcessedScreen {
+    terminal::process_bytes(pipe_data, stdin_data, palette, max_scrollback_lines)
+}
 
+fn materialize(
+    screen: &terminal::ProcessedScreen,
+    target: &TargetId,
+) -> Result<(tempfile::TempDir, std::path::PathBuf, std::path::PathBuf)> {
     let tmp_dir = tempfile::Builder::new()
         .prefix("ksb-")
         .tempdir()
@@ -155,11 +159,22 @@ fn run_core(
     let ranges_path = tmp_dir.path().join("ranges.kak");
     let init_path = tmp_dir.path().join("init.kak");
 
-    output::write_text(&text_path, &screen)?;
-    output::write_ranges(&ranges_path, &screen)?;
-    output::write_init_kak(&init_path, &screen, target, tmp_dir.path(), &ranges_path)?;
+    output::write_text(&text_path, screen)?;
+    output::write_ranges(&ranges_path, screen)?;
+    output::write_init_kak(&init_path, screen, target, tmp_dir.path(), &ranges_path)?;
 
     Ok((tmp_dir, text_path, init_path))
+}
+
+fn run_core(
+    pipe_data: &kitty::PipeData,
+    target: &TargetId,
+    palette: &[u8; 48],
+    stdin_data: &[u8],
+    max_scrollback_lines: usize,
+) -> Result<(tempfile::TempDir, std::path::PathBuf, std::path::PathBuf)> {
+    let screen = process_screen(pipe_data, palette, stdin_data, max_scrollback_lines);
+    materialize(&screen, target)
 }
 
 fn check_stdin_size(actual: u64, max: u64) -> Result<()> {
@@ -364,26 +379,35 @@ mod tests {
         }
     }
 
-    /// Run `run_core()`, read back the 3 output files, return their contents and the TempDir.
-    fn run_and_read(
+    /// Render pipeline outputs in-memory (no filesystem needed).
+    fn process_and_render(
         pipe_data: &PipeData,
         target: &TargetId,
         palette: &[u8; 48],
         stdin_data: &[u8],
-    ) -> (String, String, String, tempfile::TempDir) {
-        let (tmp_dir, text_path, init_path) = run_core(
+    ) -> (String, String, String) {
+        let screen = terminal::process_bytes(
             pipe_data,
-            target,
-            palette,
             stdin_data,
+            palette,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        );
+        let mut text_buf = Vec::new();
+        output::write_text_to(&mut text_buf, &screen).unwrap();
+        let text = String::from_utf8(text_buf).unwrap();
+
+        let mut ranges_buf = Vec::new();
+        output::write_ranges_to(&mut ranges_buf, &screen).unwrap();
+        let ranges = String::from_utf8(ranges_buf).unwrap();
+
+        let init = output::render_init_kak(
+            &screen,
+            target,
+            std::path::Path::new("/test/ksb-fake"),
+            std::path::Path::new("/test/ksb-fake/ranges.kak"),
         )
         .unwrap();
-        let ranges_path = tmp_dir.path().join("ranges.kak");
-        let text = std::fs::read_to_string(&text_path).unwrap();
-        let ranges = std::fs::read_to_string(&ranges_path).unwrap();
-        let init = std::fs::read_to_string(&init_path).unwrap();
-        (text, ranges, init, tmp_dir)
+        (text, ranges, init)
     }
 
     // --- 1. check_reentry ---
@@ -429,14 +453,13 @@ mod tests {
     #[test]
     fn pipeline_creates_expected_files() {
         let pd = default_pipe_data();
-        let (tmp_dir, text_path, init_path) = run_core(
+        let screen = process_screen(
             &pd,
-            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             b"hello",
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
-        )
-        .unwrap();
+        );
+        let (tmp_dir, text_path, init_path) = materialize(&screen, &kitty_target("1")).unwrap();
         let ranges_path = tmp_dir.path().join("ranges.kak");
 
         assert!(text_path.exists());
@@ -454,20 +477,19 @@ mod tests {
     #[test]
     fn pipeline_tmpdir_not_kept() {
         let pd = default_pipe_data();
-        let (tmp_dir, _, _) = run_core(
+        let screen = process_screen(
             &pd,
-            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             b"hello",
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
-        )
-        .unwrap();
+        );
+        let (tmp_dir, _, _) = materialize(&screen, &kitty_target("1")).unwrap();
         let path = tmp_dir.path().to_path_buf();
         assert!(path.exists());
         drop(tmp_dir);
         assert!(
             !path.exists(),
-            "TempDir should be removed on drop (run_core must not call keep())"
+            "TempDir should be removed on drop (materialize must not call keep())"
         );
     }
 
@@ -481,7 +503,7 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let (text, ranges, init, _td) = run_and_read(
+        let (text, ranges, init) = process_and_render(
             &pd,
             &kitty_target("42"),
             &palette::DEFAULT_PALETTE,
@@ -505,8 +527,8 @@ mod tests {
             columns: 80,
         };
         let input = b"\x1b[31mRed\x1b[0m Normal";
-        let (text, ranges, init, _td) =
-            run_and_read(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, input);
+        let (text, ranges, init) =
+            process_and_render(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, input);
 
         assert_eq!(text, "Red Normal\n");
         // ranges should contain a face for the red text
@@ -528,8 +550,8 @@ mod tests {
             lines: 10,
             columns: 80,
         };
-        let (_text, _ranges, init, _td) =
-            run_and_read(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, &input);
+        let (_text, _ranges, init) =
+            process_and_render(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, &input);
 
         // total_sb = 21, cursor_output_line = 21 + 5 + 1 = 27
         assert!(init.contains("select 27.1,27.1"));
@@ -558,8 +580,8 @@ mod tests {
 
         let pd = default_pipe_data();
         let input = b"\x1b[31mColored\x1b[0m";
-        let (_text, ranges, _init, _td) =
-            run_and_read(&pd, &kitty_target("1"), &custom_palette, input);
+        let (_text, ranges, _init) =
+            process_and_render(&pd, &kitty_target("1"), &custom_palette, input);
 
         // SGR 31 = color index 1 → should resolve to our custom #AABBCC
         assert!(
@@ -571,8 +593,8 @@ mod tests {
     #[test]
     fn pipeline_empty_input() {
         let pd = default_pipe_data();
-        let (text, ranges, init, _td) =
-            run_and_read(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, b"");
+        let (text, ranges, init) =
+            process_and_render(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, b"");
 
         // Empty input → text is empty, ranges empty, but init still has structure
         assert!(text.is_empty() || text == "\n");
@@ -586,14 +608,13 @@ mod tests {
     #[test]
     fn pipeline_init_references_actual_tmpdir() {
         let pd = default_pipe_data();
-        let (tmp_dir, _, init_path) = run_core(
+        let screen = process_screen(
             &pd,
-            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             b"hello",
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
-        )
-        .unwrap();
+        );
+        let (tmp_dir, _, init_path) = materialize(&screen, &kitty_target("1")).unwrap();
         let init = std::fs::read_to_string(&init_path).unwrap();
         let tmp_dir_str = tmp_dir.path().to_str().unwrap();
 
@@ -607,7 +628,7 @@ mod tests {
     #[test]
     fn pipeline_init_window_id_propagated() {
         let pd = default_pipe_data();
-        let (_text, _ranges, init, _td) = run_and_read(
+        let (_text, _ranges, init) = process_and_render(
             &pd,
             &kitty_target("999"),
             &palette::DEFAULT_PALETTE,
@@ -632,8 +653,8 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let (_text, _ranges, init, _td) =
-            run_and_read(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, input);
+        let (_text, _ranges, init) =
+            process_and_render(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, input);
 
         // "日本語" = 9 bytes, cursor_x:6 lands on 't', byte offset = 9 + 1 = 10 (1-based)
         assert!(
@@ -735,14 +756,13 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let (tmp_dir, text_path, init_path) = run_core(
+        let screen = process_screen(
             &pd,
-            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             b"hello\r\nworld",
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
-        )
-        .unwrap();
+        );
+        let (tmp_dir, text_path, init_path) = materialize(&screen, &kitty_target("1")).unwrap();
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
@@ -753,14 +773,13 @@ mod tests {
         }
         let pd = default_pipe_data();
         let input = b"\x1b[31mRed\x1b[0m \x1b[32mGreen\x1b[0m \x1b[34mBlue\x1b[0m";
-        let (tmp_dir, text_path, init_path) = run_core(
+        let screen = process_screen(
             &pd,
-            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             input,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
-        )
-        .unwrap();
+        );
+        let (tmp_dir, text_path, init_path) = materialize(&screen, &kitty_target("1")).unwrap();
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
@@ -771,14 +790,13 @@ mod tests {
         }
         let pd = default_pipe_data();
         let input = "日本語テスト".as_bytes();
-        let (tmp_dir, text_path, init_path) = run_core(
+        let screen = process_screen(
             &pd,
-            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             input,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
-        )
-        .unwrap();
+        );
+        let (tmp_dir, text_path, init_path) = materialize(&screen, &kitty_target("1")).unwrap();
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
@@ -797,14 +815,13 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let (tmp_dir, text_path, init_path) = run_core(
+        let screen = process_screen(
             &pd,
-            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             &input,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
-        )
-        .unwrap();
+        );
+        let (tmp_dir, text_path, init_path) = materialize(&screen, &kitty_target("1")).unwrap();
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
@@ -824,14 +841,13 @@ mod tests {
             input.extend_from_slice(b"\x1b[0m\r\n");
         }
         let pd = default_pipe_data();
-        let (tmp_dir, text_path, init_path) = run_core(
+        let screen = process_screen(
             &pd,
-            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             &input,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
-        )
-        .unwrap();
+        );
+        let (tmp_dir, text_path, init_path) = materialize(&screen, &kitty_target("1")).unwrap();
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
@@ -841,14 +857,13 @@ mod tests {
             return;
         }
         let pd = default_pipe_data();
-        let (tmp_dir, text_path, init_path) = run_core(
+        let screen = process_screen(
             &pd,
-            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             b"",
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
-        )
-        .unwrap();
+        );
+        let (tmp_dir, text_path, init_path) = materialize(&screen, &kitty_target("1")).unwrap();
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
@@ -859,14 +874,13 @@ mod tests {
         }
         let pd = default_pipe_data();
         let input = b"\x1b[31mRed text here\x1b[0m";
-        let (tmp_dir, text_path, init_path) = run_core(
+        let screen = process_screen(
             &pd,
-            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             input,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
-        )
-        .unwrap();
+        );
+        let (tmp_dir, text_path, init_path) = materialize(&screen, &kitty_target("1")).unwrap();
         let plugin = plugin_path();
         let result_dir = tempfile::tempdir().unwrap();
         let result_path = result_dir.path().join("colors_result");
@@ -901,14 +915,13 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let (tmp_dir, text_path, init_path) = run_core(
+        let screen = process_screen(
             &pd,
-            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             b"hello\r\nworld",
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
-        )
-        .unwrap();
+        );
+        let (tmp_dir, text_path, init_path) = materialize(&screen, &kitty_target("1")).unwrap();
         let desc = validate_cursor_in_kak(&text_path, &init_path, tmp_dir.path());
         assert_eq!(
             desc.trim(),
@@ -929,14 +942,13 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let (tmp_dir, text_path, init_path) = run_core(
+        let screen = process_screen(
             &pd,
-            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             input,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
-        )
-        .unwrap();
+        );
+        let (tmp_dir, text_path, init_path) = materialize(&screen, &kitty_target("1")).unwrap();
         let desc = validate_cursor_in_kak(&text_path, &init_path, tmp_dir.path());
         assert_eq!(
             desc.trim(),
@@ -1060,7 +1072,7 @@ mod tests {
             columns: 80,
         };
         let target = TargetId::Tmux("%5".to_string());
-        let (text, _ranges, init, _td) = run_and_read(
+        let (text, _ranges, init) = process_and_render(
             &pd,
             &target,
             &palette::DEFAULT_PALETTE,
@@ -1078,8 +1090,8 @@ mod tests {
     fn pipeline_tmux_target_special_chars_in_pane_id() {
         let pd = default_pipe_data();
         let target = TargetId::Tmux("some'target".to_string());
-        let (_text, _ranges, init, _td) =
-            run_and_read(&pd, &target, &palette::DEFAULT_PALETTE, b"test");
+        let (_text, _ranges, init) =
+            process_and_render(&pd, &target, &palette::DEFAULT_PALETTE, b"test");
 
         // Single quote in pane_id should be escaped for Kakoune
         assert!(init.contains("scrollback_tmux_pane_id 'some''target'"));
@@ -1099,14 +1111,13 @@ mod tests {
             columns: 80,
         };
         let target = TargetId::Tmux("%5".to_string());
-        let (tmp_dir, text_path, init_path) = run_core(
+        let screen = process_screen(
             &pd,
-            &target,
             &palette::DEFAULT_PALETTE,
             b"hello\r\nworld",
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
-        )
-        .unwrap();
+        );
+        let (tmp_dir, text_path, init_path) = materialize(&screen, &target).unwrap();
         validate_in_kak(&text_path, &init_path, tmp_dir.path());
     }
 
@@ -1177,7 +1188,7 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let (text, _ranges, _init, _td) = run_and_read(
+        let (text, _ranges, _init) = process_and_render(
             &pd,
             &TargetId::Tmux("%0".to_string()),
             &palette::DEFAULT_PALETTE,
@@ -1191,7 +1202,7 @@ mod tests {
         let mut input = b"\x1b[31mRed\x1b[0m\n\x1b[32mGreen\x1b[0m\n".to_vec();
         normalize_tmux_capture(&mut input);
         let pd = default_pipe_data();
-        let (text, ranges, _init, _td) = run_and_read(
+        let (text, ranges, _init) = process_and_render(
             &pd,
             &TargetId::Tmux("%0".to_string()),
             &palette::DEFAULT_PALETTE,
@@ -1213,7 +1224,7 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let (text, _ranges, _init, _td) = run_and_read(
+        let (text, _ranges, _init) = process_and_render(
             &pd,
             &TargetId::Tmux("%0".to_string()),
             &palette::DEFAULT_PALETTE,
