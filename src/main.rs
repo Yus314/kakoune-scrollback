@@ -5,20 +5,55 @@ mod terminal;
 
 use anyhow::{bail, Context, Result};
 use std::env;
+use std::fmt;
+
+/// Identifies the target terminal (Kitty window or tmux pane).
+pub enum TargetId {
+    Kitty(kitty::WindowId),
+    Tmux(String), // tmux pane ID like "%5"
+}
+
+impl TargetId {
+    /// Returns "kitty" or "tmux" for the Kakoune `scrollback_backend` option.
+    pub fn backend_name(&self) -> &'static str {
+        match self {
+            TargetId::Kitty(_) => "kitty",
+            TargetId::Tmux(_) => "tmux",
+        }
+    }
+}
+
+impl fmt::Display for TargetId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TargetId::Kitty(wid) => write!(f, "kitty:{wid}"),
+            TargetId::Tmux(pane) => write!(f, "tmux:{pane}"),
+        }
+    }
+}
 
 enum CliAction {
     ShowVersion,
     ShowHelp,
-    Run { window_id_arg: String },
+    RunKitty { window_id_arg: String },
+    RunTmux { pane_id: String },
+    GenerateTmuxConf,
 }
 
 fn parse_args(args: &[String]) -> Result<CliAction, String> {
     match args.get(1).map(String::as_str) {
-        None => Err("missing required argument: <WINDOW_ID>".into()),
+        None => Err("missing required argument: <WINDOW_ID> or --tmux-pane <PANE_ID>".into()),
         Some("-h" | "--help") => Ok(CliAction::ShowHelp),
         Some("-V" | "--version") => Ok(CliAction::ShowVersion),
+        Some("--generate-tmux-conf") => Ok(CliAction::GenerateTmuxConf),
+        Some("--tmux-pane") => match args.get(2).map(String::as_str) {
+            Some(pane_id) if !pane_id.is_empty() => Ok(CliAction::RunTmux {
+                pane_id: pane_id.to_string(),
+            }),
+            _ => Err("--tmux-pane requires a pane ID argument".into()),
+        },
         Some(arg) if arg.starts_with('-') => Err(format!("unexpected argument '{arg}'")),
-        Some(arg) => Ok(CliAction::Run {
+        Some(arg) => Ok(CliAction::RunKitty {
             window_id_arg: arg.to_string(),
         }),
     }
@@ -32,23 +67,28 @@ fn print_help() {
     print!(
         "\
 kakoune-scrollback {}
-Kitty scrollback viewer for Kakoune
+Terminal scrollback viewer for Kakoune (Kitty / tmux)
 
 USAGE:
-    kakoune-scrollback <WINDOW_ID>
+    kakoune-scrollback <WINDOW_ID>           Kitty mode
+    kakoune-scrollback --tmux-pane <PANE_ID> tmux mode
+    kakoune-scrollback --generate-tmux-conf  Print tmux.conf snippet
 
 ARGS:
-    <WINDOW_ID>    Target Kitty window ID
+    <WINDOW_ID>    Target Kitty window ID (Kitty mode)
 
 OPTIONS:
-    -h, --help       Print this help message
-    -V, --version    Print version information
+    --tmux-pane <PANE_ID>  Target tmux pane ID (tmux mode, requires tmux 3.3+)
+    --generate-tmux-conf   Print recommended tmux.conf configuration
+    -h, --help             Print this help message
+    -V, --version          Print version information
 
 ENVIRONMENT:
     KITTY_PIPE_DATA                Set automatically by Kitty
+    SCROLLBACK_PIPE_DATA           Set by tmux keybinding (same format)
     KAKOUNE_SCROLLBACK_MAX_LINES   Max lines to process (default: 200000)
 
-This tool is invoked via Kitty's pipe mechanism. See README for setup.
+See README for setup instructions.
 ",
         env!("CARGO_PKG_VERSION")
     );
@@ -59,8 +99,17 @@ fn main() {
     match parse_args(&args) {
         Ok(CliAction::ShowVersion) => print_version(),
         Ok(CliAction::ShowHelp) => print_help(),
-        Ok(CliAction::Run { window_id_arg }) => {
-            if let Err(e) = run(&window_id_arg) {
+        Ok(CliAction::GenerateTmuxConf) => generate_tmux_conf(),
+        Ok(CliAction::RunKitty { window_id_arg }) => {
+            if let Err(e) = run_kitty(&window_id_arg) {
+                eprintln!("kakoune-scrollback: {e:#}");
+                eprintln!("\nPress Enter to close.");
+                wait_for_keypress();
+                std::process::exit(1);
+            }
+        }
+        Ok(CliAction::RunTmux { pane_id }) => {
+            if let Err(e) = run_tmux(&pane_id) {
                 eprintln!("kakoune-scrollback: {e:#}");
                 eprintln!("\nPress Enter to close.");
                 wait_for_keypress();
@@ -90,8 +139,8 @@ fn check_reentry(env_val: Option<&str>) -> Result<()> {
 }
 
 fn run_core(
-    pipe_data: &kitty::KittyPipeData,
-    window_id: kitty::WindowId,
+    pipe_data: &kitty::PipeData,
+    target: &TargetId,
     palette: &[u8; 48],
     stdin_data: &[u8],
     max_scrollback_lines: usize,
@@ -108,7 +157,7 @@ fn run_core(
 
     output::write_text(&text_path, &screen)?;
     output::write_ranges(&ranges_path, &screen)?;
-    output::write_init_kak(&init_path, &screen, window_id, tmp_dir.path(), &ranges_path)?;
+    output::write_init_kak(&init_path, &screen, target, tmp_dir.path(), &ranges_path)?;
 
     Ok((tmp_dir, text_path, init_path))
 }
@@ -121,10 +170,10 @@ fn check_stdin_size(actual: u64, max: u64) -> Result<()> {
     Ok(())
 }
 
-fn run(window_id_arg: &str) -> Result<()> {
+const MAX_STDIN_BYTES: u64 = 512 * 1024 * 1024; // 512 MB
+
+fn run_kitty(window_id_arg: &str) -> Result<()> {
     use std::io::Read;
-    use std::os::unix::process::CommandExt;
-    const MAX_STDIN_BYTES: u64 = 512 * 1024 * 1024; // 512 MB
 
     check_reentry(env::var("KAKOUNE_SCROLLBACK").ok().as_deref())?;
 
@@ -142,40 +191,144 @@ fn run(window_id_arg: &str) -> Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(terminal::DEFAULT_MAX_SCROLLBACK_LINES);
 
+    let target = TargetId::Kitty(window_id);
     let (tmp_dir, text_path, init_path) = run_core(
         &pipe_data,
-        window_id,
+        &target,
         &palette,
         &stdin_data,
         max_scrollback_lines,
     )?;
 
-    let tmp_path = tmp_dir.keep();
+    exec_kak(tmp_dir, &text_path, &init_path)
+}
 
+fn run_tmux(pane_id: &str) -> Result<()> {
+    use std::io::Read;
+
+    check_reentry(env::var("KAKOUNE_SCROLLBACK").ok().as_deref())?;
+    check_tmux_version()?;
+
+    let pipe_data_str = env::var("SCROLLBACK_PIPE_DATA")
+        .context("SCROLLBACK_PIPE_DATA not set (should be set by tmux keybinding)")?;
+    let pipe_data = kitty::parse_pipe_data_str(&pipe_data_str)?;
+
+    let palette = palette::DEFAULT_PALETTE;
+
+    let mut stdin_data = Vec::new();
+    std::io::stdin()
+        .take(MAX_STDIN_BYTES + 1)
+        .read_to_end(&mut stdin_data)?;
+    if stdin_data.len() as u64 > MAX_STDIN_BYTES {
+        bail!(
+            "stdin exceeds {} bytes. \
+             Set KAKOUNE_SCROLLBACK_MAX_LINES to limit processing, \
+             or reduce scrollback history in tmux (set-option -g history-limit).",
+            MAX_STDIN_BYTES
+        );
+    }
+
+    let max_scrollback_lines: usize = env::var("KAKOUNE_SCROLLBACK_MAX_LINES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(terminal::DEFAULT_MAX_SCROLLBACK_LINES);
+
+    let target = TargetId::Tmux(pane_id.to_string());
+    let (tmp_dir, text_path, init_path) = run_core(
+        &pipe_data,
+        &target,
+        &palette,
+        &stdin_data,
+        max_scrollback_lines,
+    )?;
+
+    exec_kak(tmp_dir, &text_path, &init_path)
+}
+
+/// Replace the current process with kak, sourcing the generated init.kak.
+fn exec_kak(
+    tmp_dir: tempfile::TempDir,
+    text_path: &std::path::Path,
+    init_path: &std::path::Path,
+) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    let tmp_path = tmp_dir.keep();
     let init_path_escaped = output::escape_kak_single_quote(&init_path.display().to_string());
 
     let err = std::process::Command::new("kak")
         .env("KAKOUNE_SCROLLBACK", "1")
         .arg("-e")
         .arg(format!("source '{init_path_escaped}'"))
-        .arg(&text_path)
+        .arg(text_path)
         .exec();
 
     let _ = std::fs::remove_dir_all(&tmp_path);
     Err(err).context("failed to exec kak")
 }
 
+/// Check that tmux >= 3.3 is available (needed for display-popup -b, -e, -T).
+fn check_tmux_version() -> Result<()> {
+    let output = std::process::Command::new("tmux")
+        .arg("-V")
+        .output()
+        .context("failed to run 'tmux -V' — is tmux installed?")?;
+    let version_str = String::from_utf8_lossy(&output.stdout);
+    let version_str = version_str.trim();
+    let stripped = version_str.strip_prefix("tmux ").unwrap_or(version_str);
+    let mut parts = stripped.split('.');
+    let major: u32 = parts
+        .next()
+        .unwrap_or("0")
+        .parse()
+        .unwrap_or(0);
+    let minor_str = parts.next().unwrap_or("0");
+    let minor: u32 = minor_str
+        .trim_end_matches(|c: char| c.is_alphabetic())
+        .parse()
+        .unwrap_or(0);
+    if (major, minor) < (3, 3) {
+        bail!(
+            "tmux 3.3 or later is required (found '{stripped}'). \
+             display-popup -b, -e, -T were added in tmux 3.3."
+        );
+    }
+    Ok(())
+}
+
+/// Print recommended tmux.conf configuration to stdout.
+fn generate_tmux_conf() {
+    print!("{}", TMUX_CONF_SNIPPET);
+}
+
+const TMUX_CONF_SNIPPET: &str = r##"# kakoune-scrollback (requires tmux 3.3+)
+# Bind Prefix + H to open scrollback viewer
+bind-key H run-shell -b '                                              \
+    pane="#{pane_id}"                                                 ;\
+    cx=$(tmux display-message -p -t "$pane" "#{cursor_x}")            ;\
+    cy=$(tmux display-message -p -t "$pane" "#{cursor_y}")            ;\
+    h=$(tmux display-message -p -t "$pane" "#{pane_height}")          ;\
+    w=$(tmux display-message -p -t "$pane" "#{pane_width}")           ;\
+    tmpf=$(mktemp)                                                    ;\
+    tmux capture-pane -t "$pane" -e -p -S - > "$tmpf"                 ;\
+    tmux new-window -n scrollback                                       \
+        "SCROLLBACK_PIPE_DATA=\"0:$((cx+1)),$((cy+1)):${h},${w}\"       \
+         kakoune-scrollback --tmux-pane $pane < \"$tmpf\"             ;  \
+         rm -f \"$tmpf\""                                               \
+'
+"##;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kitty::{KittyPipeData, WindowId};
+    use crate::kitty::PipeData;
 
-    fn wid(s: &str) -> WindowId {
-        kitty::parse_window_id(s).unwrap()
+    fn kitty_target(s: &str) -> TargetId {
+        TargetId::Kitty(kitty::parse_window_id(s).unwrap())
     }
 
-    fn default_pipe_data() -> KittyPipeData {
-        KittyPipeData {
+    fn default_pipe_data() -> PipeData {
+        PipeData {
             cursor_x: 0,
             cursor_y: 0,
             lines: 24,
@@ -185,14 +338,14 @@ mod tests {
 
     /// Run `run_core()`, read back the 3 output files, return their contents and the TempDir.
     fn run_and_read(
-        pipe_data: &KittyPipeData,
-        window_id: WindowId,
+        pipe_data: &PipeData,
+        target: &TargetId,
         palette: &[u8; 48],
         stdin_data: &[u8],
     ) -> (String, String, String, tempfile::TempDir) {
         let (tmp_dir, text_path, init_path) = run_core(
             pipe_data,
-            window_id,
+            target,
             palette,
             stdin_data,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
@@ -250,7 +403,7 @@ mod tests {
         let pd = default_pipe_data();
         let (tmp_dir, text_path, init_path) = run_core(
             &pd,
-            wid("1"),
+            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             b"hello",
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
@@ -275,7 +428,7 @@ mod tests {
         let pd = default_pipe_data();
         let (tmp_dir, _, _) = run_core(
             &pd,
-            wid("1"),
+            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             b"hello",
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
@@ -294,7 +447,7 @@ mod tests {
 
     #[test]
     fn pipeline_plain_text_e2e() {
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 3,
             cursor_y: 1,
             lines: 24,
@@ -302,7 +455,7 @@ mod tests {
         };
         let (text, ranges, init, _td) = run_and_read(
             &pd,
-            wid("42"),
+            &kitty_target("42"),
             &palette::DEFAULT_PALETTE,
             b"line one\r\nline two",
         );
@@ -317,7 +470,7 @@ mod tests {
 
     #[test]
     fn pipeline_colored_e2e() {
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 0,
             lines: 24,
@@ -325,7 +478,7 @@ mod tests {
         };
         let input = b"\x1b[31mRed\x1b[0m Normal";
         let (text, ranges, init, _td) =
-            run_and_read(&pd, wid("1"), &palette::DEFAULT_PALETTE, input);
+            run_and_read(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, input);
 
         assert_eq!(text, "Red Normal\n");
         // ranges should contain a face for the red text
@@ -341,14 +494,14 @@ mod tests {
         for i in 0..30 {
             input.extend_from_slice(format!("line {i}\r\n").as_bytes());
         }
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 5,
             lines: 10,
             columns: 80,
         };
         let (_text, _ranges, init, _td) =
-            run_and_read(&pd, wid("1"), &palette::DEFAULT_PALETTE, &input);
+            run_and_read(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, &input);
 
         // total_sb = 21, cursor_output_line = 21 + 5 + 1 = 27
         assert!(init.contains("select 27.1,27.1"));
@@ -364,7 +517,7 @@ mod tests {
 
         let pd = default_pipe_data();
         let input = b"\x1b[31mColored\x1b[0m";
-        let (_text, ranges, _init, _td) = run_and_read(&pd, wid("1"), &custom_palette, input);
+        let (_text, ranges, _init, _td) = run_and_read(&pd, &kitty_target("1"), &custom_palette, input);
 
         // SGR 31 = color index 1 → should resolve to our custom #AABBCC
         assert!(
@@ -376,7 +529,7 @@ mod tests {
     #[test]
     fn pipeline_empty_input() {
         let pd = default_pipe_data();
-        let (text, ranges, init, _td) = run_and_read(&pd, wid("1"), &palette::DEFAULT_PALETTE, b"");
+        let (text, ranges, init, _td) = run_and_read(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, b"");
 
         // Empty input → text is empty, ranges empty, but init still has structure
         assert!(text.is_empty() || text == "\n");
@@ -392,7 +545,7 @@ mod tests {
         let pd = default_pipe_data();
         let (tmp_dir, _, init_path) = run_core(
             &pd,
-            wid("1"),
+            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             b"hello",
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
@@ -412,7 +565,7 @@ mod tests {
     fn pipeline_init_window_id_propagated() {
         let pd = default_pipe_data();
         let (_text, _ranges, init, _td) =
-            run_and_read(&pd, wid("999"), &palette::DEFAULT_PALETTE, b"test");
+            run_and_read(&pd, &kitty_target("999"), &palette::DEFAULT_PALETTE, b"test");
 
         assert!(
             init.contains("scrollback_kitty_window_id '999'"),
@@ -426,14 +579,14 @@ mod tests {
     fn pipeline_wide_char_cursor_e2e() {
         // "日本語" = 9 bytes (3 each), cursor at col 6 (after 3 wide chars = 6 columns)
         let input = "日本語test".as_bytes();
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 6,
             cursor_y: 0,
             lines: 24,
             columns: 80,
         };
         let (_text, _ranges, init, _td) =
-            run_and_read(&pd, wid("1"), &palette::DEFAULT_PALETTE, input);
+            run_and_read(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, input);
 
         // "日本語" = 9 bytes, cursor_x:6 lands on 't', byte offset = 9 + 1 = 10 (1-based)
         assert!(
@@ -529,7 +682,7 @@ mod tests {
         if !kak_available() {
             return;
         }
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 3,
             cursor_y: 1,
             lines: 24,
@@ -537,7 +690,7 @@ mod tests {
         };
         let (tmp_dir, text_path, init_path) = run_core(
             &pd,
-            wid("1"),
+            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             b"hello\r\nworld",
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
@@ -555,7 +708,7 @@ mod tests {
         let input = b"\x1b[31mRed\x1b[0m \x1b[32mGreen\x1b[0m \x1b[34mBlue\x1b[0m";
         let (tmp_dir, text_path, init_path) = run_core(
             &pd,
-            wid("1"),
+            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             input,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
@@ -573,7 +726,7 @@ mod tests {
         let input = "日本語テスト".as_bytes();
         let (tmp_dir, text_path, init_path) = run_core(
             &pd,
-            wid("1"),
+            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             input,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
@@ -591,7 +744,7 @@ mod tests {
         for i in 0..100 {
             input.extend_from_slice(format!("line {i}: the quick brown fox\r\n").as_bytes());
         }
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 5,
             lines: 24,
@@ -599,7 +752,7 @@ mod tests {
         };
         let (tmp_dir, text_path, init_path) = run_core(
             &pd,
-            wid("1"),
+            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             &input,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
@@ -626,7 +779,7 @@ mod tests {
         let pd = default_pipe_data();
         let (tmp_dir, text_path, init_path) = run_core(
             &pd,
-            wid("1"),
+            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             &input,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
@@ -643,7 +796,7 @@ mod tests {
         let pd = default_pipe_data();
         let (tmp_dir, text_path, init_path) = run_core(
             &pd,
-            wid("1"),
+            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             b"",
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
@@ -661,7 +814,7 @@ mod tests {
         let input = b"\x1b[31mRed text here\x1b[0m";
         let (tmp_dir, text_path, init_path) = run_core(
             &pd,
-            wid("1"),
+            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             input,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
@@ -695,7 +848,7 @@ mod tests {
         if !kak_available() {
             return;
         }
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 3,
             cursor_y: 1,
             lines: 24,
@@ -703,7 +856,7 @@ mod tests {
         };
         let (tmp_dir, text_path, init_path) = run_core(
             &pd,
-            wid("1"),
+            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             b"hello\r\nworld",
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
@@ -723,7 +876,7 @@ mod tests {
             return;
         }
         let input = "日本語test".as_bytes();
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 6,
             cursor_y: 0,
             lines: 24,
@@ -731,7 +884,7 @@ mod tests {
         };
         let (tmp_dir, text_path, init_path) = run_core(
             &pd,
-            wid("1"),
+            &kitty_target("1"),
             &palette::DEFAULT_PALETTE,
             input,
             terminal::DEFAULT_MAX_SCROLLBACK_LINES,
@@ -776,7 +929,7 @@ mod tests {
         let args = vec!["ksb".into(), "42".into()];
         assert!(matches!(
             parse_args(&args),
-            Ok(CliAction::Run { window_id_arg }) if window_id_arg == "42"
+            Ok(CliAction::RunKitty { window_id_arg }) if window_id_arg == "42"
         ));
     }
 
@@ -796,5 +949,135 @@ mod tests {
     fn parse_args_help_with_trailing() {
         let args = vec!["ksb".into(), "--help".into(), "123".into()];
         assert!(matches!(parse_args(&args), Ok(CliAction::ShowHelp)));
+    }
+
+    // --- tmux CLI arg parsing ---
+
+    #[test]
+    fn parse_args_tmux_pane() {
+        let args = vec!["ksb".into(), "--tmux-pane".into(), "%5".into()];
+        assert!(matches!(
+            parse_args(&args),
+            Ok(CliAction::RunTmux { pane_id }) if pane_id == "%5"
+        ));
+    }
+
+    #[test]
+    fn parse_args_tmux_pane_missing_id() {
+        let args = vec!["ksb".into(), "--tmux-pane".into()];
+        assert!(parse_args(&args).is_err());
+    }
+
+    #[test]
+    fn parse_args_tmux_pane_empty_id() {
+        let args = vec!["ksb".into(), "--tmux-pane".into(), "".into()];
+        assert!(parse_args(&args).is_err());
+    }
+
+    #[test]
+    fn parse_args_generate_tmux_conf() {
+        let args = vec!["ksb".into(), "--generate-tmux-conf".into()];
+        assert!(matches!(
+            parse_args(&args),
+            Ok(CliAction::GenerateTmuxConf)
+        ));
+    }
+
+    // --- TargetId ---
+
+    #[test]
+    fn target_id_backend_name_kitty() {
+        let t = kitty_target("1");
+        assert_eq!(t.backend_name(), "kitty");
+    }
+
+    #[test]
+    fn target_id_backend_name_tmux() {
+        let t = TargetId::Tmux("%5".to_string());
+        assert_eq!(t.backend_name(), "tmux");
+    }
+
+    #[test]
+    fn target_id_display() {
+        let t = kitty_target("42");
+        assert_eq!(t.to_string(), "kitty:42");
+        let t = TargetId::Tmux("%5".to_string());
+        assert_eq!(t.to_string(), "tmux:%5");
+    }
+
+    // --- run_core with tmux target ---
+
+    #[test]
+    fn pipeline_tmux_target_e2e() {
+        let pd = PipeData {
+            cursor_x: 3,
+            cursor_y: 1,
+            lines: 24,
+            columns: 80,
+        };
+        let target = TargetId::Tmux("%5".to_string());
+        let (text, _ranges, init, _td) = run_and_read(
+            &pd,
+            &target,
+            &palette::DEFAULT_PALETTE,
+            b"line one\r\nline two",
+        );
+
+        assert_eq!(text, "line one\nline two\n");
+        assert!(init.contains("scrollback_backend 'tmux'"));
+        assert!(init.contains("scrollback_tmux_pane_id '%5'"));
+        assert!(!init.contains("scrollback_kitty_window_id"));
+        assert!(init.contains("select 2.4,2.4"));
+    }
+
+    #[test]
+    fn pipeline_tmux_target_special_chars_in_pane_id() {
+        let pd = default_pipe_data();
+        let target = TargetId::Tmux("some'target".to_string());
+        let (_text, _ranges, init, _td) = run_and_read(
+            &pd,
+            &target,
+            &palette::DEFAULT_PALETTE,
+            b"test",
+        );
+
+        // Single quote in pane_id should be escaped for Kakoune
+        assert!(init.contains("scrollback_tmux_pane_id 'some''target'"));
+    }
+
+    // --- write_init_kak with tmux target (Kakoune integration) ---
+
+    #[test]
+    fn kak_validates_tmux_target() {
+        if !kak_available() {
+            return;
+        }
+        let pd = PipeData {
+            cursor_x: 3,
+            cursor_y: 1,
+            lines: 24,
+            columns: 80,
+        };
+        let target = TargetId::Tmux("%5".to_string());
+        let (tmp_dir, text_path, init_path) = run_core(
+            &pd,
+            &target,
+            &palette::DEFAULT_PALETTE,
+            b"hello\r\nworld",
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        )
+        .unwrap();
+        validate_in_kak(&text_path, &init_path, tmp_dir.path());
+    }
+
+    // --- generate_tmux_conf ---
+
+    #[test]
+    fn tmux_conf_snippet_is_not_empty() {
+        assert!(!TMUX_CONF_SNIPPET.is_empty());
+        assert!(TMUX_CONF_SNIPPET.contains("bind-key"));
+        assert!(TMUX_CONF_SNIPPET.contains("kakoune-scrollback --tmux-pane"));
+        assert!(TMUX_CONF_SNIPPET.contains("SCROLLBACK_PIPE_DATA"));
+        assert!(TMUX_CONF_SNIPPET.contains("capture-pane"));
     }
 }

@@ -15,7 +15,7 @@ impl fmt::Display for WindowId {
 }
 
 #[derive(Debug)]
-pub struct KittyPipeData {
+pub struct PipeData {
     pub cursor_x: usize,
     pub cursor_y: usize,
     pub lines: u16,
@@ -25,7 +25,7 @@ pub struct KittyPipeData {
 /// Pure function: parse from string (separated for testability)
 /// Format (Kitty): `{scrolled_by}:{cursor_x},{cursor_y}:{lines},{columns}`
 /// cursor_x, cursor_y are 1-based (top-left = 1,1); converted to 0-based internally.
-pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
+pub fn parse_pipe_data_str(s: &str) -> Result<PipeData> {
     let s = s.trim();
 
     let (part0, rest) = s
@@ -98,7 +98,7 @@ pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
         );
     }
 
-    Ok(KittyPipeData {
+    Ok(PipeData {
         cursor_x: cursor_x_1 - 1,
         cursor_y: cursor_y_1 - 1,
         lines,
@@ -107,7 +107,7 @@ pub fn parse_pipe_data_str(s: &str) -> Result<KittyPipeData> {
 }
 
 /// Read `KITTY_PIPE_DATA` environment variable and delegate to `parse_pipe_data_str`
-pub fn parse_pipe_data() -> Result<KittyPipeData> {
+pub fn parse_pipe_data() -> Result<PipeData> {
     let val =
         std::env::var("KITTY_PIPE_DATA").context("KITTY_PIPE_DATA environment variable not set")?;
     parse_pipe_data_str(&val)

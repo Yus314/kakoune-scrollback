@@ -336,6 +336,156 @@ run_kak "
 " || true
 assert_file_eq "scrollback_kitty_window_id can be set (buffer)" "$RESULT" "99"
 
+# 8. New tmux-related options
+echo ""
+echo "tmux options:"
+
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    evaluate-commands %sh{
+        if [ -n \"\${kak_opt_scrollback_backend+x}\" ]; then
+            printf PASS > '$RESULT'
+        else
+            printf FAIL > '$RESULT'
+        fi
+    }
+    quit! 0
+" || true
+assert_file_eq "scrollback_backend is declared" "$RESULT" "PASS"
+
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    evaluate-commands %sh{
+        printf '%s' \"\$kak_opt_scrollback_backend\" > '$RESULT'
+    }
+    quit! 0
+" || true
+assert_file_eq "scrollback_backend defaults to empty" "$RESULT" ""
+
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    evaluate-commands %sh{
+        if [ -n \"\${kak_opt_scrollback_tmux_pane_id+x}\" ]; then
+            printf PASS > '$RESULT'
+        else
+            printf FAIL > '$RESULT'
+        fi
+    }
+    quit! 0
+" || true
+assert_file_eq "scrollback_tmux_pane_id is declared" "$RESULT" "PASS"
+
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    evaluate-commands %sh{
+        printf '%s' \"\$kak_opt_scrollback_tmux_pane_id\" > '$RESULT'
+    }
+    quit! 0
+" || true
+assert_file_eq "scrollback_tmux_pane_id defaults to empty" "$RESULT" ""
+
+# 9. Backend dispatch
+echo ""
+echo "Backend dispatch:"
+
+# dispatch with backend=kitty resolves to kitty command
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *test*
+    set-option global scrollback_backend 'kitty'
+    set-option global scrollback_kitty_window_id '1'
+    define-command -override kakoune-scrollback-send-to-kitty %{
+        nop %sh{ printf KITTY > '$RESULT' }
+    }
+    kakoune-scrollback-send
+    quit!
+" || true
+assert_file_eq "dispatch send with backend=kitty" "$RESULT" "KITTY"
+
+# dispatch with backend=tmux resolves to tmux command
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *test*
+    set-option global scrollback_backend 'tmux'
+    set-option global scrollback_tmux_pane_id '%5'
+    define-command -override kakoune-scrollback-send-to-tmux %{
+        nop %sh{ printf TMUX > '$RESULT' }
+    }
+    kakoune-scrollback-send
+    quit!
+" || true
+assert_file_eq "dispatch send with backend=tmux" "$RESULT" "TMUX"
+
+# dispatch with empty backend fails
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *test*
+    try %{
+        kakoune-scrollback-send
+    } catch %{
+        nop %sh{ printf CAUGHT > '$RESULT' }
+    }
+    quit!
+" || true
+assert_file_eq "dispatch fails when backend not set" "$RESULT" "CAUGHT"
+
+# dispatch with unknown backend fails
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *test*
+    set-option global scrollback_backend 'unknown'
+    try %{
+        kakoune-scrollback-send
+    } catch %{
+        nop %sh{ printf CAUGHT > '$RESULT' }
+    }
+    quit!
+" || true
+assert_file_eq "dispatch fails with unknown backend" "$RESULT" "CAUGHT"
+
+# execute-target dispatch
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *test*
+    set-option global scrollback_backend 'kitty'
+    define-command -override kakoune-scrollback-execute-in-kitty %{
+        nop %sh{ printf EXEC_KITTY > '$RESULT' }
+    }
+    kakoune-scrollback-execute-target
+    quit!
+" || true
+assert_file_eq "dispatch execute-target with backend=kitty" "$RESULT" "EXEC_KITTY"
+
+# open-compose dispatch
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *test*
+    set-option global scrollback_backend 'tmux'
+    define-command -override kakoune-scrollback-compose-tmux %{
+        nop %sh{ printf COMPOSE_TMUX > '$RESULT' }
+    }
+    kakoune-scrollback-open-compose
+    quit!
+" || true
+assert_file_eq "dispatch open-compose with backend=tmux" "$RESULT" "COMPOSE_TMUX"
+
+# 10. tmux command definitions
+echo ""
+echo "tmux command definitions:"
+
+assert_ok "kakoune-scrollback-require-backend" \
+    "source '$PLUGIN'; set-option global scrollback_backend 'kitty'; kakoune-scrollback-require-backend; quit! 0"
+
 # --- Summary ---
 
 echo ""

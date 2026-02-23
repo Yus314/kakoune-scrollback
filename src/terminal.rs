@@ -1,4 +1,4 @@
-use crate::kitty::KittyPipeData;
+use crate::kitty::PipeData;
 use crate::palette;
 
 /// Cursor position (calculated as Kakoune byte offset)
@@ -27,14 +27,14 @@ pub(crate) const DEFAULT_MAX_SCROLLBACK_LINES: usize = 200_000;
 
 /// Process from byte slice directly
 pub fn process_bytes(
-    pipe_data: &KittyPipeData,
+    pipe_data: &PipeData,
     data: &[u8],
     palette: &[u8; 48],
     max_scrollback_lines: usize,
 ) -> ProcessedScreen {
     // Clamp to minimum 1: vt100::Parser panics with 0 rows or 0 columns.
     // parse_pipe_data_str() already rejects 0, but this guards against
-    // direct KittyPipeData construction (e.g. in tests).
+    // direct PipeData construction (e.g. in tests).
     let rows = pipe_data.lines.max(1);
     let cols = pipe_data.columns.max(1);
 
@@ -101,7 +101,7 @@ pub fn process_bytes(
 fn push_row(
     screen: &vt100::Screen,
     row: u16,
-    pipe_data: &KittyPipeData,
+    pipe_data: &PipeData,
     cursor_output_line: usize,
     lines: &mut Vec<ProcessedLine>,
     cursor: &mut CursorPosition,
@@ -290,10 +290,10 @@ fn face_key_to_string(key: &FaceKey) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kitty::KittyPipeData;
+    use crate::kitty::PipeData;
 
-    fn default_pipe_data() -> KittyPipeData {
-        KittyPipeData {
+    fn default_pipe_data() -> PipeData {
+        PipeData {
             cursor_x: 0,
             cursor_y: 0,
             lines: 24,
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn cursor_position_simple() {
         let input = b"line1\r\nline2\r\nline3";
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 3,
             cursor_y: 2,
             lines: 24,
@@ -442,7 +442,7 @@ mod tests {
         for i in 0..30 {
             input.extend_from_slice(format!("line {i}\r\n").as_bytes());
         }
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 0,
             lines: 10,
@@ -468,7 +468,7 @@ mod tests {
         for i in 0..30 {
             input.extend_from_slice(format!("line {i}\r\n").as_bytes());
         }
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 5,
             lines: 10,
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn cursor_clamped_on_trimmed_empty_lines() {
         let input = b"Hello";
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 23,
             lines: 24,
@@ -547,7 +547,7 @@ mod tests {
     fn span_adjustment_on_trailing_trim() {
         // Red "Hi" followed by red trailing spaces that get trimmed
         let input = b"\x1b[31mHi   \x1b[0m";
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 0,
             lines: 24,
@@ -647,7 +647,7 @@ mod tests {
     #[test]
     fn cursor_on_wide_character() {
         let input = "日test".as_bytes();
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 2,
             cursor_y: 0,
             lines: 24,
@@ -673,7 +673,7 @@ mod tests {
         }
 
         // Cursor at first visible line (cursor_y:0)
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 0,
             lines: 10,
@@ -690,7 +690,7 @@ mod tests {
         assert_eq!(screen.cursor.line, 22);
 
         // Cursor at last visible line (cursor_y:9)
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 9,
             lines: 10,
@@ -728,7 +728,7 @@ mod tests {
         for i in 0..30 {
             input.extend_from_slice(format!("line {i}\r\n").as_bytes());
         }
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 0,
             lines: 10,
@@ -746,7 +746,7 @@ mod tests {
         for i in 0..30 {
             input.extend_from_slice(format!("line {i}\r\n").as_bytes());
         }
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 5,
             lines: 10,
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn process_bytes_does_not_panic_with_zero_lines() {
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 0,
             lines: 0,
@@ -773,7 +773,7 @@ mod tests {
 
     #[test]
     fn process_bytes_does_not_panic_with_zero_columns() {
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 0,
             lines: 24,
@@ -786,7 +786,7 @@ mod tests {
 
     #[test]
     fn process_bytes_saturating_add_no_panic() {
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: usize::MAX,
             lines: 24,

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::kitty::WindowId;
+use crate::TargetId;
 use crate::terminal::ProcessedScreen;
 
 /// Generate plain text file
@@ -88,7 +88,7 @@ fn escape_face(face: &str) -> String {
 pub fn write_init_kak(
     path: &Path,
     screen: &ProcessedScreen,
-    window_id: WindowId,
+    target: &TargetId,
     tmp_dir: &Path,
     ranges_path: &Path,
 ) -> Result<()> {
@@ -98,11 +98,29 @@ pub fn write_init_kak(
     let tmp_dir_sh = escape_shell_single_quote(&tmp_dir_s);
     let ranges_path_kak = escape_kak_single_quote(&ranges_path.display().to_string());
 
-    // Global options (accessible from compose client too)
+    // Backend type for dispatch
     writeln!(
         script,
-        "set-option global scrollback_kitty_window_id '{window_id}'"
+        "set-option global scrollback_backend '{}'",
+        target.backend_name()
     )?;
+
+    // Backend-specific target ID
+    match target {
+        TargetId::Kitty(wid) => {
+            writeln!(
+                script,
+                "set-option global scrollback_kitty_window_id '{wid}'"
+            )?;
+        }
+        TargetId::Tmux(pane_id) => {
+            let escaped = escape_kak_single_quote(pane_id);
+            writeln!(
+                script,
+                "set-option global scrollback_tmux_pane_id '{escaped}'"
+            )?;
+        }
+    }
     writeln!(script)?;
 
     // Buffer settings
@@ -157,10 +175,11 @@ pub fn write_init_kak(
 mod tests {
     use super::*;
     use crate::kitty;
+    use crate::TargetId;
     use crate::terminal::{CursorPosition, ProcessedLine, ProcessedScreen, Span};
 
-    fn wid(s: &str) -> kitty::WindowId {
-        kitty::parse_window_id(s).unwrap()
+    fn kitty_target(s: &str) -> TargetId {
+        TargetId::Kitty(kitty::parse_window_id(s).unwrap())
     }
 
     fn make_screen(lines: Vec<ProcessedLine>, cursor: CursorPosition) -> ProcessedScreen {
@@ -245,9 +264,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("init.kak");
         let ranges_path = dir.path().join("ranges.kak");
-        write_init_kak(&path, &screen, wid("42"), dir.path(), &ranges_path).unwrap();
+        write_init_kak(&path, &screen, &kitty_target("42"), dir.path(), &ranges_path).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
 
+        assert!(content.contains("scrollback_backend 'kitty'"));
         assert!(content.contains("scrollback_kitty_window_id '42'"));
         assert!(content.contains("readonly true"));
         assert!(content.contains("select 5.3,5.3"));
@@ -300,11 +320,11 @@ mod tests {
 
     #[test]
     fn span_end_byte_exclusive_to_inclusive() {
-        use crate::kitty::KittyPipeData;
+        use crate::kitty::PipeData;
         use crate::terminal;
 
         let input = b"\x1b[31mHello\x1b[0m World";
-        let pd = KittyPipeData {
+        let pd = PipeData {
             cursor_x: 0,
             cursor_y: 0,
             lines: 24,
@@ -495,7 +515,7 @@ mod tests {
         std::fs::create_dir_all(&evil_dir).unwrap();
         let path = evil_dir.join("init.kak");
         let ranges_path = evil_dir.join("ranges.kak");
-        write_init_kak(&path, &screen, wid("42"), &evil_dir, &ranges_path).unwrap();
+        write_init_kak(&path, &screen, &kitty_target("42"), &evil_dir, &ranges_path).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
 
         // Kakoune contexts should use '' escaping
@@ -538,8 +558,76 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("init.kak");
         let ranges_path = dir.path().join("ranges.kak");
-        write_init_kak(&path, &screen, wid("42"), dir.path(), &ranges_path).unwrap();
+        write_init_kak(&path, &screen, &kitty_target("42"), dir.path(), &ranges_path).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("select 1000.50,1000.50"));
+    }
+
+    // --- tmux TargetId tests ---
+
+    #[test]
+    fn write_init_kak_tmux_target() {
+        let screen = make_screen(
+            vec![ProcessedLine {
+                text: "test".to_string(),
+                spans: vec![],
+            }],
+            CursorPosition { line: 1, col: 1 },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("init.kak");
+        let ranges_path = dir.path().join("ranges.kak");
+        let target = TargetId::Tmux("%5".to_string());
+        write_init_kak(&path, &screen, &target, dir.path(), &ranges_path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        assert!(content.contains("scrollback_backend 'tmux'"));
+        assert!(content.contains("scrollback_tmux_pane_id '%5'"));
+        assert!(!content.contains("scrollback_kitty_window_id"));
+        assert!(content.contains("readonly true"));
+        assert!(content.contains("kakoune-scrollback-setup-keymaps"));
+        assert!(content.contains("ClientClose"));
+    }
+
+    #[test]
+    fn write_init_kak_tmux_pane_id_with_quote() {
+        let screen = make_screen(
+            vec![ProcessedLine {
+                text: "test".to_string(),
+                spans: vec![],
+            }],
+            CursorPosition { line: 1, col: 1 },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("init.kak");
+        let ranges_path = dir.path().join("ranges.kak");
+        let target = TargetId::Tmux("it's".to_string());
+        write_init_kak(&path, &screen, &target, dir.path(), &ranges_path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        assert!(
+            content.contains("scrollback_tmux_pane_id 'it''s'"),
+            "Single quote in pane_id should be escaped, got:\n{content}"
+        );
+    }
+
+    #[test]
+    fn write_init_kak_kitty_sets_backend() {
+        let screen = make_screen(
+            vec![ProcessedLine {
+                text: "test".to_string(),
+                spans: vec![],
+            }],
+            CursorPosition { line: 1, col: 1 },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("init.kak");
+        let ranges_path = dir.path().join("ranges.kak");
+        write_init_kak(&path, &screen, &kitty_target("1"), dir.path(), &ranges_path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        assert!(content.contains("scrollback_backend 'kitty'"));
+        assert!(content.contains("scrollback_kitty_window_id '1'"));
+        assert!(!content.contains("scrollback_tmux_pane_id"));
     }
 }
