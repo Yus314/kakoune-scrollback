@@ -177,34 +177,58 @@ fn run_core(
     materialize(&screen, target)
 }
 
-fn check_stdin_size(actual: u64, max: u64) -> Result<()> {
+fn read_input_bounded<R: std::io::Read>(reader: R, max_bytes: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut data = Vec::new();
+    reader.take(max_bytes + 1).read_to_end(&mut data)?;
     anyhow::ensure!(
-        actual <= max,
-        "scrollback input exceeds {max} bytes, aborting"
+        data.len() as u64 <= max_bytes,
+        "scrollback input exceeds {max_bytes} bytes, aborting"
     );
-    Ok(())
+    Ok(data)
+}
+
+fn parse_max_lines(value: &str) -> Option<usize> {
+    value.trim().parse().ok()
+}
+
+fn resolve_max_scrollback_lines() -> usize {
+    match env::var("KAKOUNE_SCROLLBACK_MAX_LINES") {
+        Err(env::VarError::NotPresent) => terminal::DEFAULT_MAX_SCROLLBACK_LINES,
+        Err(env::VarError::NotUnicode(_)) => {
+            eprintln!(
+                "warning: KAKOUNE_SCROLLBACK_MAX_LINES contains invalid UTF-8, \
+                 using default ({}).",
+                terminal::DEFAULT_MAX_SCROLLBACK_LINES
+            );
+            terminal::DEFAULT_MAX_SCROLLBACK_LINES
+        }
+        Ok(val) => match parse_max_lines(&val) {
+            Some(n) => n,
+            None => {
+                eprintln!(
+                    "warning: invalid KAKOUNE_SCROLLBACK_MAX_LINES value {:?}, \
+                     using default ({}).",
+                    val,
+                    terminal::DEFAULT_MAX_SCROLLBACK_LINES
+                );
+                terminal::DEFAULT_MAX_SCROLLBACK_LINES
+            }
+        },
+    }
 }
 
 const MAX_STDIN_BYTES: u64 = 512 * 1024 * 1024; // 512 MB
 
 fn run_kitty(window_id_arg: &str) -> Result<()> {
-    use std::io::Read;
-
     check_reentry(env::var("KAKOUNE_SCROLLBACK").ok().as_deref())?;
 
     let pipe_data = kitty::parse_pipe_data()?;
     let window_id = kitty::parse_window_id(window_id_arg)?;
     let palette = kitty::get_palette(window_id);
-    let mut stdin_data = Vec::new();
-    std::io::stdin()
-        .take(MAX_STDIN_BYTES + 1)
-        .read_to_end(&mut stdin_data)?;
-    check_stdin_size(stdin_data.len() as u64, MAX_STDIN_BYTES)?;
+    let stdin_data = read_input_bounded(std::io::stdin(), MAX_STDIN_BYTES)?;
 
-    let max_scrollback_lines: usize = env::var("KAKOUNE_SCROLLBACK_MAX_LINES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(terminal::DEFAULT_MAX_SCROLLBACK_LINES);
+    let max_scrollback_lines = resolve_max_scrollback_lines();
 
     let target = TargetId::Kitty(window_id);
     let (tmp_dir, text_path, init_path) = run_core(
@@ -249,8 +273,6 @@ fn normalize_tmux_capture(data: &mut Vec<u8>) {
 }
 
 fn run_tmux(pane_id: &str) -> Result<()> {
-    use std::io::Read;
-
     check_reentry(env::var("KAKOUNE_SCROLLBACK").ok().as_deref())?;
     check_tmux_version()?;
 
@@ -260,25 +282,13 @@ fn run_tmux(pane_id: &str) -> Result<()> {
 
     let palette = palette::DEFAULT_PALETTE;
 
-    let mut stdin_data = Vec::new();
-    std::io::stdin()
-        .take(MAX_STDIN_BYTES + 1)
-        .read_to_end(&mut stdin_data)?;
-    if stdin_data.len() as u64 > MAX_STDIN_BYTES {
-        bail!(
-            "stdin exceeds {} bytes. \
-             Set KAKOUNE_SCROLLBACK_MAX_LINES to limit processing, \
-             or reduce scrollback history in tmux (set-option -g history-limit).",
-            MAX_STDIN_BYTES
-        );
-    }
+    let mut stdin_data = read_input_bounded(std::io::stdin(), MAX_STDIN_BYTES)
+        .context("Set KAKOUNE_SCROLLBACK_MAX_LINES to limit processing, \
+                  or reduce scrollback history in tmux (set-option -g history-limit).")?;
 
     normalize_tmux_capture(&mut stdin_data);
 
-    let max_scrollback_lines: usize = env::var("KAKOUNE_SCROLLBACK_MAX_LINES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(terminal::DEFAULT_MAX_SCROLLBACK_LINES);
+    let max_scrollback_lines = resolve_max_scrollback_lines();
 
     let target = TargetId::Tmux(pane_id.to_string());
     let (tmp_dir, text_path, init_path) = run_core(
@@ -292,6 +302,19 @@ fn run_tmux(pane_id: &str) -> Result<()> {
     exec_kak(tmp_dir, &text_path, &init_path)
 }
 
+fn build_kak_command(
+    text_path: &std::path::Path,
+    init_path: &std::path::Path,
+) -> std::process::Command {
+    let init_path_escaped = output::escape_kak_single_quote(&init_path.display().to_string());
+    let mut cmd = std::process::Command::new("kak");
+    cmd.env("KAKOUNE_SCROLLBACK", "1")
+        .arg("-e")
+        .arg(format!("source '{init_path_escaped}'"))
+        .arg(text_path);
+    cmd
+}
+
 /// Replace the current process with kak, sourcing the generated init.kak.
 fn exec_kak(
     tmp_dir: tempfile::TempDir,
@@ -301,14 +324,7 @@ fn exec_kak(
     use std::os::unix::process::CommandExt;
 
     let tmp_path = tmp_dir.keep();
-    let init_path_escaped = output::escape_kak_single_quote(&init_path.display().to_string());
-
-    let err = std::process::Command::new("kak")
-        .env("KAKOUNE_SCROLLBACK", "1")
-        .arg("-e")
-        .arg(format!("source '{init_path_escaped}'"))
-        .arg(text_path)
-        .exec();
+    let err = build_kak_command(text_path, init_path).exec();
 
     let _ = std::fs::remove_dir_all(&tmp_path);
     Err(err).context("failed to exec kak")
@@ -427,25 +443,139 @@ mod tests {
         assert!(check_reentry(None).is_ok());
     }
 
-    // --- check_stdin_size ---
+    // --- build_kak_command ---
 
     #[test]
-    fn check_stdin_size_within_limit() {
-        assert!(check_stdin_size(0, 100).is_ok());
-        assert!(check_stdin_size(99, 100).is_ok());
-        assert!(check_stdin_size(100, 100).is_ok()); // exactly at limit = OK
+    fn build_kak_command_program() {
+        let cmd = build_kak_command(
+            std::path::Path::new("/tmp/text.txt"),
+            std::path::Path::new("/tmp/init.kak"),
+        );
+        assert_eq!(cmd.get_program(), "kak");
     }
 
     #[test]
-    fn check_stdin_size_exceeds_limit() {
-        assert!(check_stdin_size(101, 100).is_err());
-        assert!(check_stdin_size(200, 100).is_err());
+    fn build_kak_command_args() {
+        let cmd = build_kak_command(
+            std::path::Path::new("/tmp/text.txt"),
+            std::path::Path::new("/tmp/init.kak"),
+        );
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0], "-e");
+        assert_eq!(args[1], "source '/tmp/init.kak'");
+        assert_eq!(args[2], "/tmp/text.txt");
     }
 
     #[test]
-    fn check_stdin_size_zero_max() {
-        assert!(check_stdin_size(0, 0).is_ok());
-        assert!(check_stdin_size(1, 0).is_err());
+    fn build_kak_command_env() {
+        let cmd = build_kak_command(
+            std::path::Path::new("/tmp/text.txt"),
+            std::path::Path::new("/tmp/init.kak"),
+        );
+        let envs: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = cmd.get_envs().collect();
+        assert!(
+            envs.iter().any(|(k, v)| k == &"KAKOUNE_SCROLLBACK"
+                && v == &Some(std::ffi::OsStr::new("1"))),
+            "KAKOUNE_SCROLLBACK=1 should be set, got: {envs:?}"
+        );
+    }
+
+    #[test]
+    fn build_kak_command_init_path_with_quote() {
+        let cmd = build_kak_command(
+            std::path::Path::new("/tmp/text.txt"),
+            std::path::Path::new("/tmp/it's/init.kak"),
+        );
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(args[1], "source '/tmp/it''s/init.kak'");
+    }
+
+    #[test]
+    fn build_kak_command_path_with_space() {
+        let cmd = build_kak_command(
+            std::path::Path::new("/tmp/my dir/text.txt"),
+            std::path::Path::new("/tmp/my dir/init.kak"),
+        );
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        // Space in path should not split the argument
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[2], "/tmp/my dir/text.txt");
+    }
+
+    // --- parse_max_lines ---
+
+    #[test]
+    fn parse_max_lines_valid() {
+        assert_eq!(parse_max_lines("100000"), Some(100000));
+        assert_eq!(parse_max_lines("0"), Some(0));
+        assert_eq!(parse_max_lines("1"), Some(1));
+        assert_eq!(parse_max_lines(" 100 "), Some(100));
+        assert_eq!(parse_max_lines("100\n"), Some(100));
+    }
+
+    #[test]
+    fn parse_max_lines_invalid() {
+        assert_eq!(parse_max_lines(""), None);
+        assert_eq!(parse_max_lines("abc"), None);
+        assert_eq!(parse_max_lines("-1"), None);
+        assert_eq!(parse_max_lines("3.14"), None);
+        assert_eq!(parse_max_lines("100_000"), None);
+    }
+
+    #[test]
+    fn parse_max_lines_overflow() {
+        // usize::MAX + 1 as a string
+        let overflow = format!("{}0", usize::MAX);
+        assert_eq!(parse_max_lines(&overflow), None);
+    }
+
+    // --- read_input_bounded ---
+
+    #[test]
+    fn read_input_bounded_within_limit() {
+        let data = b"hello world";
+        let result = read_input_bounded(std::io::Cursor::new(data), 100).unwrap();
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn read_input_bounded_exact_limit() {
+        let data = vec![0u8; 100];
+        let result = read_input_bounded(std::io::Cursor::new(&data), 100).unwrap();
+        assert_eq!(result.len(), 100);
+    }
+
+    #[test]
+    fn read_input_bounded_exceeds_limit() {
+        let data = vec![0u8; 101];
+        let err = read_input_bounded(std::io::Cursor::new(&data), 100);
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("exceeds"), "error should mention 'exceeds', got: {msg}");
+    }
+
+    #[test]
+    fn read_input_bounded_empty() {
+        let result = read_input_bounded(std::io::Cursor::new(b""), 100).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn read_input_bounded_zero_limit() {
+        // Empty input with zero limit should succeed
+        let result = read_input_bounded(std::io::Cursor::new(b""), 0).unwrap();
+        assert!(result.is_empty());
+        // Any data with zero limit should fail
+        let err = read_input_bounded(std::io::Cursor::new(b"x"), 0);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn read_input_bounded_large_input() {
+        let data = vec![0u8; 1024];
+        let err = read_input_bounded(std::io::Cursor::new(&data), 512);
+        assert!(err.is_err());
     }
 
     // --- 2. tmpdir ---
