@@ -277,11 +277,7 @@ fn check_tmux_version() -> Result<()> {
     let version_str = version_str.trim();
     let stripped = version_str.strip_prefix("tmux ").unwrap_or(version_str);
     let mut parts = stripped.split('.');
-    let major: u32 = parts
-        .next()
-        .unwrap_or("0")
-        .parse()
-        .unwrap_or(0);
+    let major: u32 = parts.next().unwrap_or("0").parse().unwrap_or(0);
     let minor_str = parts.next().unwrap_or("0");
     let minor: u32 = minor_str
         .trim_end_matches(|c: char| c.is_alphabetic())
@@ -505,6 +501,19 @@ mod tests {
 
         // total_sb = 21, cursor_output_line = 21 + 5 + 1 = 27
         assert!(init.contains("select 27.1,27.1"));
+        // viewport_top_line = 21 + 1 = 22, should use vt
+        assert!(
+            init.contains("select 22.1,22.1"),
+            "should set viewport top line to 22, got:\n{init}"
+        );
+        assert!(
+            init.contains("execute-keys vt"),
+            "should use vt for viewport positioning, got:\n{init}"
+        );
+        assert!(
+            !init.contains("execute-keys vb"),
+            "should not contain vb, got:\n{init}"
+        );
     }
 
     #[test]
@@ -517,7 +526,8 @@ mod tests {
 
         let pd = default_pipe_data();
         let input = b"\x1b[31mColored\x1b[0m";
-        let (_text, ranges, _init, _td) = run_and_read(&pd, &kitty_target("1"), &custom_palette, input);
+        let (_text, ranges, _init, _td) =
+            run_and_read(&pd, &kitty_target("1"), &custom_palette, input);
 
         // SGR 31 = color index 1 → should resolve to our custom #AABBCC
         assert!(
@@ -529,7 +539,8 @@ mod tests {
     #[test]
     fn pipeline_empty_input() {
         let pd = default_pipe_data();
-        let (text, ranges, init, _td) = run_and_read(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, b"");
+        let (text, ranges, init, _td) =
+            run_and_read(&pd, &kitty_target("1"), &palette::DEFAULT_PALETTE, b"");
 
         // Empty input → text is empty, ranges empty, but init still has structure
         assert!(text.is_empty() || text == "\n");
@@ -564,8 +575,12 @@ mod tests {
     #[test]
     fn pipeline_init_window_id_propagated() {
         let pd = default_pipe_data();
-        let (_text, _ranges, init, _td) =
-            run_and_read(&pd, &kitty_target("999"), &palette::DEFAULT_PALETTE, b"test");
+        let (_text, _ranges, init, _td) = run_and_read(
+            &pd,
+            &kitty_target("999"),
+            &palette::DEFAULT_PALETTE,
+            b"test",
+        );
 
         assert!(
             init.contains("scrollback_kitty_window_id '999'"),
@@ -977,10 +992,7 @@ mod tests {
     #[test]
     fn parse_args_generate_tmux_conf() {
         let args = vec!["ksb".into(), "--generate-tmux-conf".into()];
-        assert!(matches!(
-            parse_args(&args),
-            Ok(CliAction::GenerateTmuxConf)
-        ));
+        assert!(matches!(parse_args(&args), Ok(CliAction::GenerateTmuxConf)));
     }
 
     // --- TargetId ---
@@ -1034,12 +1046,8 @@ mod tests {
     fn pipeline_tmux_target_special_chars_in_pane_id() {
         let pd = default_pipe_data();
         let target = TargetId::Tmux("some'target".to_string());
-        let (_text, _ranges, init, _td) = run_and_read(
-            &pd,
-            &target,
-            &palette::DEFAULT_PALETTE,
-            b"test",
-        );
+        let (_text, _ranges, init, _td) =
+            run_and_read(&pd, &target, &palette::DEFAULT_PALETTE, b"test");
 
         // Single quote in pane_id should be escaped for Kakoune
         assert!(init.contains("scrollback_tmux_pane_id 'some''target'"));

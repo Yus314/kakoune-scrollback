@@ -10,6 +10,7 @@ pub struct CursorPosition {
 pub struct ProcessedScreen {
     pub lines: Vec<ProcessedLine>,
     pub cursor: CursorPosition,
+    pub viewport_top_line: usize, // 1-based: first visible line of original terminal
 }
 
 pub struct ProcessedLine {
@@ -47,11 +48,15 @@ pub fn process_bytes(
     screen.set_scrollback(usize::MAX);
     let total_sb = screen.scrollback();
 
+    let viewport_top_line_raw = total_sb.saturating_add(1);
+
     let mut lines = Vec::new();
     let mut cursor = CursorPosition { line: 1, col: 1 };
 
     // The cursor in the output buffer is at line (total_sb + cursor_y + 1), 1-based
-    let cursor_output_line = total_sb.saturating_add(pipe_data.cursor_y).saturating_add(1);
+    let cursor_output_line = total_sb
+        .saturating_add(pipe_data.cursor_y)
+        .saturating_add(1);
 
     // Read initial screen rows from the max scrollback offset
     screen.set_scrollback(total_sb);
@@ -95,7 +100,18 @@ pub fn process_bytes(
         cursor.col = 1;
     }
 
-    ProcessedScreen { lines, cursor }
+    // Clamp viewport_top_line after trim
+    let viewport_top_line = if lines.is_empty() {
+        1
+    } else {
+        viewport_top_line_raw.min(lines.len())
+    };
+
+    ProcessedScreen {
+        lines,
+        cursor,
+        viewport_top_line,
+    }
 }
 
 fn push_row(
@@ -767,7 +783,12 @@ mod tests {
             columns: 80,
         };
         // Should not panic — process_bytes clamps lines to 1
-        let screen = process_bytes(&pd, b"Hello", &palette::DEFAULT_PALETTE, DEFAULT_MAX_SCROLLBACK_LINES);
+        let screen = process_bytes(
+            &pd,
+            b"Hello",
+            &palette::DEFAULT_PALETTE,
+            DEFAULT_MAX_SCROLLBACK_LINES,
+        );
         assert!(screen.cursor.line >= 1);
     }
 
@@ -780,7 +801,12 @@ mod tests {
             columns: 0,
         };
         // Should not panic — process_bytes clamps columns to 1
-        let screen = process_bytes(&pd, b"Hello", &palette::DEFAULT_PALETTE, DEFAULT_MAX_SCROLLBACK_LINES);
+        let screen = process_bytes(
+            &pd,
+            b"Hello",
+            &palette::DEFAULT_PALETTE,
+            DEFAULT_MAX_SCROLLBACK_LINES,
+        );
         assert!(screen.cursor.line >= 1);
     }
 
@@ -792,10 +818,88 @@ mod tests {
             lines: 24,
             columns: 80,
         };
-        let screen = process_bytes(&pd, b"Hello", &palette::DEFAULT_PALETTE, DEFAULT_MAX_SCROLLBACK_LINES);
+        let screen = process_bytes(
+            &pd,
+            b"Hello",
+            &palette::DEFAULT_PALETTE,
+            DEFAULT_MAX_SCROLLBACK_LINES,
+        );
         // Saturated cursor_output_line → is_cursor_line never matches → cursor stays at initial (1,1)
         assert_eq!(screen.cursor.line, 1);
         assert_eq!(screen.cursor.col, 1);
+    }
+
+    // --- viewport_top_line ---
+
+    #[test]
+    fn viewport_top_line_no_scrollback() {
+        let input = b"Hello";
+        let pd = default_pipe_data();
+        let screen = process_bytes(
+            &pd,
+            input,
+            &palette::DEFAULT_PALETTE,
+            DEFAULT_MAX_SCROLLBACK_LINES,
+        );
+        // No scrollback → total_sb = 0 → viewport_top_line = 1
+        assert_eq!(screen.viewport_top_line, 1);
+    }
+
+    #[test]
+    fn viewport_top_line_with_scrollback() {
+        let mut input = Vec::new();
+        for i in 0..30 {
+            input.extend_from_slice(format!("line {i}\r\n").as_bytes());
+        }
+        let pd = PipeData {
+            cursor_x: 0,
+            cursor_y: 0,
+            lines: 10,
+            columns: 80,
+        };
+        let screen = process_bytes(
+            &pd,
+            &input,
+            &palette::DEFAULT_PALETTE,
+            DEFAULT_MAX_SCROLLBACK_LINES,
+        );
+        // 30 lines + trailing \r\n = 31 rows in 10-line terminal → total_sb = 21
+        // viewport_top_line = 21 + 1 = 22
+        assert_eq!(screen.viewport_top_line, 22);
+    }
+
+    #[test]
+    fn viewport_top_line_clamped_after_trim() {
+        // Only 1 line of real content, cursor far below → empty lines trimmed
+        let input = b"Hello";
+        let pd = PipeData {
+            cursor_x: 0,
+            cursor_y: 0,
+            lines: 24,
+            columns: 80,
+        };
+        let screen = process_bytes(
+            &pd,
+            input,
+            &palette::DEFAULT_PALETTE,
+            DEFAULT_MAX_SCROLLBACK_LINES,
+        );
+        // No scrollback, lines trimmed to 1 → viewport_top_line = min(1, 1) = 1
+        assert_eq!(screen.viewport_top_line, 1);
+        assert_eq!(screen.lines.len(), 1);
+    }
+
+    #[test]
+    fn viewport_top_line_empty_input() {
+        let pd = default_pipe_data();
+        let screen = process_bytes(
+            &pd,
+            b"",
+            &palette::DEFAULT_PALETTE,
+            DEFAULT_MAX_SCROLLBACK_LINES,
+        );
+        // Empty → viewport_top_line falls back to 1
+        assert_eq!(screen.viewport_top_line, 1);
     }
 
     #[test]

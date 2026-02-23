@@ -88,14 +88,10 @@ pub fn parse_pipe_data_str(s: &str) -> Result<PipeData> {
         bail!("KITTY_PIPE_DATA: cursor_y must be at least 1 (1-based)");
     }
     if cursor_x_1 > usize::from(columns) {
-        bail!(
-            "KITTY_PIPE_DATA: cursor_x ({cursor_x_1}) must be at most columns ({columns})"
-        );
+        bail!("KITTY_PIPE_DATA: cursor_x ({cursor_x_1}) must be at most columns ({columns})");
     }
     if cursor_y_1 > usize::from(lines) {
-        bail!(
-            "KITTY_PIPE_DATA: cursor_y ({cursor_y_1}) must be at most lines ({lines})"
-        );
+        bail!("KITTY_PIPE_DATA: cursor_y ({cursor_y_1}) must be at most lines ({lines})");
     }
 
     Ok(PipeData {
@@ -239,7 +235,10 @@ mod tests {
         let err = parse_pipe_data_str("0:1,1:0,80");
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
+        assert!(
+            msg.contains("KITTY_PIPE_DATA:"),
+            "error should have standard prefix: {msg}"
+        );
         assert!(msg.contains("lines"), "error should mention lines: {msg}");
     }
 
@@ -248,8 +247,14 @@ mod tests {
         let err = parse_pipe_data_str("0:1,1:24,0");
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
-        assert!(msg.contains("columns"), "error should mention columns: {msg}");
+        assert!(
+            msg.contains("KITTY_PIPE_DATA:"),
+            "error should have standard prefix: {msg}"
+        );
+        assert!(
+            msg.contains("columns"),
+            "error should mention columns: {msg}"
+        );
     }
 
     #[test]
@@ -257,8 +262,14 @@ mod tests {
         let err = parse_pipe_data_str("0:1,25:24,80");
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
-        assert!(msg.contains("cursor_y"), "error should mention cursor_y: {msg}");
+        assert!(
+            msg.contains("KITTY_PIPE_DATA:"),
+            "error should have standard prefix: {msg}"
+        );
+        assert!(
+            msg.contains("cursor_y"),
+            "error should mention cursor_y: {msg}"
+        );
     }
 
     #[test]
@@ -266,8 +277,14 @@ mod tests {
         let err = parse_pipe_data_str("0:81,1:24,80");
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
-        assert!(msg.contains("cursor_x"), "error should mention cursor_x: {msg}");
+        assert!(
+            msg.contains("KITTY_PIPE_DATA:"),
+            "error should have standard prefix: {msg}"
+        );
+        assert!(
+            msg.contains("cursor_x"),
+            "error should mention cursor_x: {msg}"
+        );
     }
 
     #[test]
@@ -282,8 +299,14 @@ mod tests {
         let err = parse_pipe_data_str("0:1,9999:24,80");
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
-        assert!(msg.contains("cursor_y"), "error should mention cursor_y: {msg}");
+        assert!(
+            msg.contains("KITTY_PIPE_DATA:"),
+            "error should have standard prefix: {msg}"
+        );
+        assert!(
+            msg.contains("cursor_y"),
+            "error should mention cursor_y: {msg}"
+        );
     }
 
     #[test]
@@ -291,8 +314,14 @@ mod tests {
         let err = parse_pipe_data_str("0:0,1:24,80");
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
-        assert!(msg.contains("cursor_x"), "error should mention cursor_x: {msg}");
+        assert!(
+            msg.contains("KITTY_PIPE_DATA:"),
+            "error should have standard prefix: {msg}"
+        );
+        assert!(
+            msg.contains("cursor_x"),
+            "error should mention cursor_x: {msg}"
+        );
     }
 
     #[test]
@@ -300,8 +329,14 @@ mod tests {
         let err = parse_pipe_data_str("0:1,0:24,80");
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("KITTY_PIPE_DATA:"), "error should have standard prefix: {msg}");
-        assert!(msg.contains("cursor_y"), "error should mention cursor_y: {msg}");
+        assert!(
+            msg.contains("KITTY_PIPE_DATA:"),
+            "error should have standard prefix: {msg}"
+        );
+        assert!(
+            msg.contains("cursor_y"),
+            "error should mention cursor_y: {msg}"
+        );
     }
 
     #[test]

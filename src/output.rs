@@ -4,8 +4,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::TargetId;
 use crate::terminal::ProcessedScreen;
+use crate::TargetId;
 
 /// Generate plain text file
 pub fn write_text(path: &Path, screen: &ProcessedScreen) -> Result<()> {
@@ -141,14 +141,22 @@ pub fn write_init_kak(
     writeln!(script, "update-option buffer scrollback_colors")?;
     writeln!(script)?;
 
-    // Cursor position restore (calculated in Rust)
+    // Viewport position restore: pin the original terminal's top visible line,
+    // then restore cursor position
+    writeln!(script, "try %{{")?;
+    writeln!(
+        script,
+        "    select {vt}.1,{vt}.1",
+        vt = screen.viewport_top_line,
+    )?;
+    writeln!(script, "    execute-keys vt")?;
+    writeln!(script, "}}")?;
     writeln!(
         script,
         "select {line}.{col},{line}.{col}",
         line = screen.cursor.line,
         col = screen.cursor.col,
     )?;
-    writeln!(script, "execute-keys vb")?;
     writeln!(script)?;
 
     // Enable keymaps
@@ -175,15 +183,31 @@ pub fn write_init_kak(
 mod tests {
     use super::*;
     use crate::kitty;
-    use crate::TargetId;
     use crate::terminal::{CursorPosition, ProcessedLine, ProcessedScreen, Span};
+    use crate::TargetId;
 
     fn kitty_target(s: &str) -> TargetId {
         TargetId::Kitty(kitty::parse_window_id(s).unwrap())
     }
 
     fn make_screen(lines: Vec<ProcessedLine>, cursor: CursorPosition) -> ProcessedScreen {
-        ProcessedScreen { lines, cursor }
+        ProcessedScreen {
+            lines,
+            cursor,
+            viewport_top_line: 1,
+        }
+    }
+
+    fn make_screen_with_viewport(
+        lines: Vec<ProcessedLine>,
+        cursor: CursorPosition,
+        viewport_top_line: usize,
+    ) -> ProcessedScreen {
+        ProcessedScreen {
+            lines,
+            cursor,
+            viewport_top_line,
+        }
     }
 
     #[test]
@@ -264,17 +288,73 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("init.kak");
         let ranges_path = dir.path().join("ranges.kak");
-        write_init_kak(&path, &screen, &kitty_target("42"), dir.path(), &ranges_path).unwrap();
+        write_init_kak(
+            &path,
+            &screen,
+            &kitty_target("42"),
+            dir.path(),
+            &ranges_path,
+        )
+        .unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
 
         assert!(content.contains("scrollback_backend 'kitty'"));
         assert!(content.contains("scrollback_kitty_window_id '42'"));
         assert!(content.contains("readonly true"));
         assert!(content.contains("select 5.3,5.3"));
-        assert!(content.contains("execute-keys vb"));
+        assert!(content.contains("execute-keys vt"));
+        assert!(
+            !content.contains("execute-keys vb"),
+            "should not contain vb, got:\n{content}"
+        );
         assert!(content.contains("kakoune-scrollback-setup-keymaps"));
         assert!(content.contains("ClientClose"));
         assert!(content.contains("rm -rf --"));
+    }
+
+    #[test]
+    fn write_init_kak_viewport_positioning() {
+        // Simulate scrollback: viewport_top_line = 22 (total_sb=21)
+        let screen = make_screen_with_viewport(
+            vec![ProcessedLine {
+                text: "test".to_string(),
+                spans: vec![],
+            }],
+            CursorPosition { line: 27, col: 1 },
+            22,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("init.kak");
+        let ranges_path = dir.path().join("ranges.kak");
+        write_init_kak(&path, &screen, &kitty_target("1"), dir.path(), &ranges_path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        // Should contain viewport positioning with vt
+        assert!(
+            content.contains("select 22.1,22.1"),
+            "should set viewport top line, got:\n{content}"
+        );
+        assert!(
+            content.contains("execute-keys vt"),
+            "should use vt to pin viewport top, got:\n{content}"
+        );
+        // Should restore cursor after viewport positioning
+        assert!(
+            content.contains("select 27.1,27.1"),
+            "should restore cursor position, got:\n{content}"
+        );
+        // Should NOT contain vb
+        assert!(
+            !content.contains("execute-keys vb"),
+            "should not contain vb, got:\n{content}"
+        );
+        // vt select should come before cursor select
+        let vt_pos = content.find("select 22.1,22.1").unwrap();
+        let cursor_pos = content.find("select 27.1,27.1").unwrap();
+        assert!(
+            vt_pos < cursor_pos,
+            "viewport select should come before cursor select"
+        );
     }
 
     // --- Phase 1: HIGH priority ---
@@ -558,7 +638,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("init.kak");
         let ranges_path = dir.path().join("ranges.kak");
-        write_init_kak(&path, &screen, &kitty_target("42"), dir.path(), &ranges_path).unwrap();
+        write_init_kak(
+            &path,
+            &screen,
+            &kitty_target("42"),
+            dir.path(),
+            &ranges_path,
+        )
+        .unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("select 1000.50,1000.50"));
     }
