@@ -321,4 +321,33 @@ color0     #000000
         let palette = parse_kitty_colors(output);
         assert_eq!(palette, DEFAULT_PALETTE);
     }
+
+    // --- #RGB shorthand tests ---
+
+    #[test]
+    fn parse_kitty_colors_short_hex() {
+        let palette = parse_kitty_colors("color0 #F0A\n");
+        assert_eq!(palette[0], 0xFF);
+        assert_eq!(palette[1], 0x00);
+        assert_eq!(palette[2], 0xAA);
+    }
+
+    #[test]
+    fn parse_kitty_colors_short_hex_lowercase() {
+        let palette = parse_kitty_colors("color1 #f0a\n");
+        assert_eq!(palette[3], 0xFF);
+        assert_eq!(palette[4], 0x00);
+        assert_eq!(palette[5], 0xAA);
+    }
+
+    #[test]
+    fn parse_kitty_colors_short_hex_mixed_with_long() {
+        let palette = parse_kitty_colors("color0 #F0A\ncolor1 #112233\n");
+        assert_eq!(palette[0], 0xFF);
+        assert_eq!(palette[1], 0x00);
+        assert_eq!(palette[2], 0xAA);
+        assert_eq!(palette[3], 0x11);
+        assert_eq!(palette[4], 0x22);
+        assert_eq!(palette[5], 0x33);
+    }
 }

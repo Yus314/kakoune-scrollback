@@ -120,6 +120,22 @@ pub fn parse_window_id(s: &str) -> Result<WindowId> {
     Ok(WindowId(id))
 }
 
+/// Process the output of `kitty @ get-colors`.
+/// Returns `DEFAULT_PALETTE` with a warning if the command failed.
+fn process_palette_output(success: bool, stdout: &[u8], stderr: &[u8]) -> [u8; 48] {
+    if success {
+        let text = String::from_utf8_lossy(stdout);
+        palette::parse_kitty_colors(&text)
+    } else {
+        let stderr_text = String::from_utf8_lossy(stderr);
+        eprintln!(
+            "warning: kitty @ get-colors failed: {}\nUsing default palette.",
+            stderr_text.trim(),
+        );
+        palette::DEFAULT_PALETTE
+    }
+}
+
 /// Query the running Kitty instance for its color palette.
 /// Falls back to `DEFAULT_PALETTE` with a warning if the command fails.
 pub fn get_palette(window_id: WindowId) -> [u8; 48] {
@@ -127,19 +143,7 @@ pub fn get_palette(window_id: WindowId) -> [u8; 48] {
         .args(["@", "get-colors", "--match", &format!("id:{window_id}")])
         .output();
     match output {
-        Ok(out) if out.status.success() => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            palette::parse_kitty_colors(&text)
-        }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            eprintln!(
-                "warning: kitty @ get-colors failed ({}): {}\nUsing default palette.",
-                out.status,
-                stderr.trim(),
-            );
-            palette::DEFAULT_PALETTE
-        }
+        Ok(out) => process_palette_output(out.status.success(), &out.stdout, &out.stderr),
         Err(e) => {
             eprintln!("warning: failed to run kitty @ get-colors: {e}\nUsing default palette.");
             palette::DEFAULT_PALETTE
@@ -366,5 +370,32 @@ mod tests {
         assert_eq!(data.cursor_y, 0);
         assert_eq!(data.lines, 24);
         assert_eq!(data.columns, 80);
+    }
+
+    // --- process_palette_output tests ---
+
+    #[test]
+    fn process_palette_output_success() {
+        let stdout = b"color0 #112233\n";
+        let palette = process_palette_output(true, stdout, b"");
+        assert_eq!(palette[0], 0x11);
+        assert_eq!(palette[1], 0x22);
+        assert_eq!(palette[2], 0x33);
+    }
+
+    #[test]
+    fn process_palette_output_failure_returns_default() {
+        let palette = process_palette_output(false, b"", b"error\n");
+        assert_eq!(palette, palette::DEFAULT_PALETTE);
+    }
+
+    #[test]
+    fn process_palette_output_success_non_utf8() {
+        // Non-UTF8 bytes on a non-color line are safely ignored
+        let stdout = b"color0 #112233\n\xff\xfenon-color-line\n";
+        let palette = process_palette_output(true, stdout, b"");
+        assert_eq!(palette[0], 0x11);
+        assert_eq!(palette[1], 0x22);
+        assert_eq!(palette[2], 0x33);
     }
 }

@@ -486,6 +486,220 @@ echo "tmux command definitions:"
 assert_ok "kakoune-scrollback-require-backend" \
     "source '$PLUGIN'; set-option global scrollback_backend 'kitty'; kakoune-scrollback-require-backend; quit! 0"
 
+# 11. Compose submit/cancel
+echo ""
+echo "Compose submit/cancel:"
+
+RESULT2="$TMPDIR_TEST/result2"
+
+# submit: send is called with buffer contents
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *compose*
+    execute-keys 'ihello world<esc>'
+    set-option global scrollback_backend 'kitty'
+    set-option global scrollback_kitty_window_id '1'
+    define-command -override kakoune-scrollback-send %{
+        nop %sh{ printf '%s' \"\$kak_selection\" > '$RESULT' }
+    }
+    kakoune-scrollback-submit
+" || true
+# $(cat) strips trailing newline; selection includes kak's trailing \n
+assert_file_eq "submit sends buffer contents" "$RESULT" "hello world"
+
+# submit-exec: both send and execute-target are called
+> "$RESULT"
+> "$RESULT2"
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *compose*
+    execute-keys 'itest line<esc>'
+    set-option global scrollback_backend 'kitty'
+    set-option global scrollback_kitty_window_id '1'
+    define-command -override kakoune-scrollback-send %{
+        nop %sh{ printf '%s' \"\$kak_selection\" > '$RESULT' }
+    }
+    define-command -override kakoune-scrollback-execute-target %{
+        nop %sh{ printf EXECUTED > '$RESULT2' }
+    }
+    kakoune-scrollback-submit-exec
+" || true
+assert_file_eq "submit-exec sends buffer contents" "$RESULT" "test line"
+assert_file_eq "submit-exec calls execute-target" "$RESULT2" "EXECUTED"
+
+# cancel: send is NOT called
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *compose*
+    execute-keys 'ishould not send<esc>'
+    set-option global scrollback_backend 'kitty'
+    set-option global scrollback_kitty_window_id '1'
+    define-command -override kakoune-scrollback-send %{
+        nop %sh{ printf SENT > '$RESULT' }
+    }
+    kakoune-scrollback-cancel
+" || true
+assert_file_eq "cancel does not call send" "$RESULT" ""
+
+# 12. Send command stubs
+echo ""
+echo "Send command stubs:"
+
+STUB_DIR="$TMPDIR_TEST/stub_bin"
+mkdir -p "$STUB_DIR"
+KITTY_LOG="$TMPDIR_TEST/kitty_log"
+KITTY_STDIN="$TMPDIR_TEST/kitty_stdin"
+TMUX_LOG="$TMPDIR_TEST/tmux_log"
+
+# Create kitty stub
+cat > "$STUB_DIR/kitty" << 'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$KITTY_LOG"
+cat > "$KITTY_STDIN"
+exit 0
+STUB
+chmod +x "$STUB_DIR/kitty"
+
+# Create tmux stub
+cat > "$STUB_DIR/tmux" << 'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TMUX_LOG"
+if [ "$1" = "load-buffer" ]; then
+    cat > /dev/null
+fi
+exit 0
+STUB
+chmod +x "$STUB_DIR/tmux"
+
+# Save PATH so we can restore after stub tests
+SAVED_PATH="$PATH"
+
+# kitty stub: stdin receives selection
+> "$KITTY_LOG"
+> "$KITTY_STDIN"
+export PATH="$STUB_DIR:$PATH"
+export KITTY_LOG KITTY_STDIN
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *test*
+    execute-keys 'ihello kitty<esc>%'
+    set-option global scrollback_backend 'kitty'
+    set-option global scrollback_kitty_window_id '42'
+    kakoune-scrollback-send-to-kitty
+    quit!
+" || true
+# $(cat) strips trailing newline; selection includes kak's trailing \n
+assert_file_eq "kitty stub receives selection on stdin" "$KITTY_STDIN" "hello kitty"
+
+# kitty stub: --match=id:42 is in arguments
+> "$RESULT"
+if grep -q 'match=id:42' "$KITTY_LOG" 2>/dev/null; then
+    printf FOUND > "$RESULT"
+fi
+assert_file_eq "kitty args contain --match=id:42" "$RESULT" "FOUND"
+
+# tmux stub: load-buffer and paste-buffer are called
+> "$TMUX_LOG"
+export TMUX_LOG
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *test*
+    execute-keys 'itmux text<esc>%'
+    set-option global scrollback_backend 'tmux'
+    set-option global scrollback_tmux_pane_id '%7'
+    kakoune-scrollback-send-to-tmux
+    quit!
+" || true
+> "$RESULT"
+if grep -q 'load-buffer' "$TMUX_LOG" 2>/dev/null && grep -q 'paste-buffer' "$TMUX_LOG" 2>/dev/null; then
+    printf BOTH > "$RESULT"
+fi
+assert_file_eq "tmux stub: load-buffer + paste-buffer called" "$RESULT" "BOTH"
+
+# tmux stub: pane ID %7 is passed to paste-buffer
+> "$RESULT"
+if grep 'paste-buffer' "$TMUX_LOG" 2>/dev/null | grep -q '%7'; then
+    printf FOUND > "$RESULT"
+fi
+assert_file_eq "tmux paste-buffer receives pane ID %7" "$RESULT" "FOUND"
+
+# Restore PATH
+export PATH="$SAVED_PATH"
+
+# 13. Compose esc keymap
+echo ""
+echo "Compose keymaps:"
+
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    edit -scratch *compose*
+    execute-keys 'ishould cancel<esc>'
+    define-command -override kakoune-scrollback-cancel %{
+        nop %sh{ printf CANCELLED > '$RESULT' }
+    }
+    kakoune-scrollback-setup-compose-keymaps
+    execute-keys -with-maps <esc>
+    quit!
+" || true
+assert_file_eq "esc keymap triggers cancel" "$RESULT" "CANCELLED"
+
+# 14. generate-tmux-conf
+echo ""
+echo "generate-tmux-conf:"
+
+GEN_STUB_DIR="$TMPDIR_TEST/gen_stub_bin"
+mkdir -p "$GEN_STUB_DIR"
+
+# generate-tmux-conf failure test: stub exits 1
+cat > "$GEN_STUB_DIR/kakoune-scrollback" << 'STUB'
+#!/bin/sh
+echo "mock error" >&2
+exit 1
+STUB
+chmod +x "$GEN_STUB_DIR/kakoune-scrollback"
+
+SAVED_PATH2="$PATH"
+export PATH="$GEN_STUB_DIR:$PATH"
+
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    try %{ kakoune-scrollback-generate-tmux-conf } catch %{
+        nop %sh{ printf CAUGHT > '$RESULT' }
+    }
+    quit!
+" || true
+assert_file_eq "generate-tmux-conf catches failure" "$RESULT" "CAUGHT"
+
+# generate-tmux-conf success test: stub outputs conf with single quote
+cat > "$GEN_STUB_DIR/kakoune-scrollback" << 'STUB'
+#!/bin/sh
+printf "bind-key -T copy-mode 'h' send-keys -X scrollback\n"
+STUB
+chmod +x "$GEN_STUB_DIR/kakoune-scrollback"
+
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    kakoune-scrollback-generate-tmux-conf
+    evaluate-commands -buffer *tmux-conf* %{
+        execute-keys '%'
+        nop %sh{ printf '%s' \"\$kak_selection\" > '$RESULT' }
+    }
+    quit!
+" || true
+# Check that the tmux-conf buffer contains the single quote (escaped properly)
+> "$RESULT2"
+if grep -q "bind-key" "$RESULT" 2>/dev/null; then
+    printf FOUND > "$RESULT2"
+fi
+assert_file_eq "generate-tmux-conf populates buffer" "$RESULT2" "FOUND"
+
+export PATH="$SAVED_PATH2"
+
 # --- Summary ---
 
 echo ""

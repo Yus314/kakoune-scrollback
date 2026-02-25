@@ -7,14 +7,11 @@ pub(crate) fn generate_conf() {
     print!("{}", CONF_SNIPPET);
 }
 
-/// Check that tmux >= 3.3 is available (needed for display-popup -b, -e, -T).
-pub(crate) fn check_version() -> Result<()> {
-    let output = std::process::Command::new("tmux")
-        .arg("-V")
-        .output()
-        .context("failed to run 'tmux -V' — is tmux installed?")?;
-    let version_str = String::from_utf8_lossy(&output.stdout);
-    let version_str = version_str.trim();
+/// Parse tmux version string and verify >= 3.3.
+/// Accepts formats like "tmux 3.3", "tmux 3.3a", "3.4", etc.
+/// Unparseable components default to 0 (e.g. "not-a-version" → 0.0 → Err).
+fn parse_version(stdout: &str) -> Result<()> {
+    let version_str = stdout.trim();
     let stripped = version_str.strip_prefix("tmux ").unwrap_or(version_str);
     let mut parts = stripped.split('.');
     let major: u32 = parts.next().unwrap_or("0").parse().unwrap_or(0);
@@ -30,6 +27,16 @@ pub(crate) fn check_version() -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Check that tmux >= 3.3 is available (needed for display-popup -b, -e, -T).
+pub(crate) fn check_version() -> Result<()> {
+    let output = std::process::Command::new("tmux")
+        .arg("-V")
+        .output()
+        .context("failed to run 'tmux -V' — is tmux installed?")?;
+    let version_str = String::from_utf8_lossy(&output.stdout);
+    parse_version(&version_str)
 }
 
 /// Insert CR before every bare LF so the vt100 parser resets the column.
@@ -115,5 +122,65 @@ mod tests {
         let mut data = b"\x1b[31mRed\x1b[0m\nNext line\n".to_vec();
         normalize_capture(&mut data);
         assert_eq!(data, b"\x1b[31mRed\x1b[0m\r\nNext line\r\n");
+    }
+
+    #[test]
+    fn normalize_consecutive_lf() {
+        let mut data = b"A\n\n\nB\n".to_vec();
+        normalize_capture(&mut data);
+        assert_eq!(data, b"A\r\n\r\n\r\nB\r\n");
+    }
+
+    // --- parse_version tests ---
+
+    #[test]
+    fn parse_version_3_3_ok() {
+        assert!(parse_version("tmux 3.3").is_ok());
+    }
+
+    #[test]
+    fn parse_version_3_3a_ok() {
+        assert!(parse_version("tmux 3.3a").is_ok());
+    }
+
+    #[test]
+    fn parse_version_3_4_ok() {
+        assert!(parse_version("tmux 3.4").is_ok());
+    }
+
+    #[test]
+    fn parse_version_4_0_ok() {
+        assert!(parse_version("tmux 4.0").is_ok());
+    }
+
+    #[test]
+    fn parse_version_3_2_too_old() {
+        let err = parse_version("tmux 3.2").unwrap_err();
+        assert!(err.to_string().contains("3.3 or later"));
+    }
+
+    #[test]
+    fn parse_version_2_9a_too_old() {
+        assert!(parse_version("tmux 2.9a").is_err());
+    }
+
+    #[test]
+    fn parse_version_no_prefix() {
+        assert!(parse_version("3.4").is_ok());
+    }
+
+    #[test]
+    fn parse_version_empty() {
+        assert!(parse_version("").is_err());
+    }
+
+    #[test]
+    fn parse_version_garbage() {
+        assert!(parse_version("not-a-version").is_err());
+    }
+
+    #[test]
+    fn parse_version_trailing_newline() {
+        assert!(parse_version("tmux 3.3\n").is_ok());
     }
 }
