@@ -27,6 +27,7 @@
           filter = path: type:
             (craneLib.filterCargoSources path type)
             || (builtins.match ".*rc/.*\\.kak$" path != null)
+            || (builtins.match ".*rc/.*\\.conf$" path != null)
             || (baseNameOf path == "rc" && type == "directory");
         };
 
