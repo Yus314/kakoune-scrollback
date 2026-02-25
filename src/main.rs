@@ -253,9 +253,10 @@ fn run_tmux(pane_id: &str) -> Result<()> {
 
     let palette = palette::DEFAULT_PALETTE;
 
-    let mut stdin_data = read_input_bounded(std::io::stdin(), MAX_STDIN_BYTES)
-        .context("Set KAKOUNE_SCROLLBACK_MAX_LINES to limit processing, \
-                  or reduce scrollback history in tmux (set-option -g history-limit).")?;
+    let mut stdin_data = read_input_bounded(std::io::stdin(), MAX_STDIN_BYTES).context(
+        "Set KAKOUNE_SCROLLBACK_MAX_LINES to limit processing, \
+                  or reduce scrollback history in tmux (set-option -g history-limit).",
+    )?;
 
     tmux::normalize_capture(&mut stdin_data);
 
@@ -399,8 +400,8 @@ mod tests {
         );
         let envs: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = cmd.get_envs().collect();
         assert!(
-            envs.iter().any(|(k, v)| k == &"KAKOUNE_SCROLLBACK"
-                && v == &Some(std::ffi::OsStr::new("1"))),
+            envs.iter()
+                .any(|(k, v)| k == &"KAKOUNE_SCROLLBACK" && v == &Some(std::ffi::OsStr::new("1"))),
             "KAKOUNE_SCROLLBACK=1 should be set, got: {envs:?}"
         );
     }
@@ -476,7 +477,10 @@ mod tests {
         let err = read_input_bounded(std::io::Cursor::new(&data), 100);
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("exceeds"), "error should mention 'exceeds', got: {msg}");
+        assert!(
+            msg.contains("exceeds"),
+            "error should mention 'exceeds', got: {msg}"
+        );
     }
 
     #[test]
