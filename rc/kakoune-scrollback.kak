@@ -40,11 +40,11 @@ define-command -hidden kakoune-scrollback-setup-compose-keymaps %{
 
 define-command -hidden kakoune-scrollback-require-backend %{
     evaluate-commands %sh{
+        _ksb_fail() { printf "fail '%s: %s'\n" "$1" "$(printf '%s' "$2" | tr '\r\n' '  ' | head -c 200 | sed "s/'/''/g")"; }
         case "$kak_opt_scrollback_backend" in
             kitty|tmux) ;;
             '') echo "fail 'scrollback_backend not set (init.kak not loaded?)'" ;;
-            *)  printf "fail 'unknown scrollback_backend: %s'\n" \
-                    "$(printf '%s' "$kak_opt_scrollback_backend" | tr '\r\n' '  ' | sed "s/'/''/g" | head -c 200)" ;;
+            *)  _ksb_fail "unknown scrollback_backend" "$kak_opt_scrollback_backend" ;;
         esac
     }
 }
@@ -68,25 +68,25 @@ define-command -hidden kakoune-scrollback-open-compose %{
 
 define-command -hidden kakoune-scrollback-send-to-kitty %{
     evaluate-commands %sh{
+        _ksb_fail() { printf "fail '%s: %s'\n" "$1" "$(printf '%s' "$2" | tr '\r\n' '  ' | head -c 200 | sed "s/'/''/g")"; }
         err=$(printf '%s' "$kak_selection" | kitty @ send-text \
             --match="id:${kak_opt_scrollback_kitty_window_id}" \
             --bracketed-paste=enable \
             --stdin 2>&1)
         if [ $? -ne 0 ]; then
-            err=$(printf '%s' "$err" | tr '\r\n' '  ' | sed "s/'/''/g" | head -c 200)
-            echo "fail 'send-text failed: ${err}'"
+            _ksb_fail "send-text failed" "$err"
         fi
     }
 }
 
 define-command -hidden kakoune-scrollback-execute-in-kitty %{
     evaluate-commands %sh{
+        _ksb_fail() { printf "fail '%s: %s'\n" "$1" "$(printf '%s' "$2" | tr '\r\n' '  ' | head -c 200 | sed "s/'/''/g")"; }
         err=$(printf '\r' | kitty @ send-text \
             --match="id:${kak_opt_scrollback_kitty_window_id}" \
             --stdin 2>&1)
         if [ $? -ne 0 ]; then
-            err=$(printf '%s' "$err" | tr '\r\n' '  ' | sed "s/'/''/g" | head -c 200)
-            echo "fail 'send-text failed: ${err}'"
+            _ksb_fail "send-text failed" "$err"
         fi
     }
 }
@@ -95,20 +95,19 @@ define-command -hidden kakoune-scrollback-execute-in-kitty %{
 
 define-command -hidden kakoune-scrollback-send-to-tmux %{
     evaluate-commands %sh{
+        _ksb_fail() { printf "fail '%s: %s'\n" "$1" "$(printf '%s' "$2" | tr '\r\n' '  ' | head -c 200 | sed "s/'/''/g")"; }
         pane="$kak_opt_scrollback_tmux_pane_id"
         buf="_ksb_$$"
         trap 'tmux delete-buffer -b "$buf" 2>/dev/null' EXIT
 
         err=$(printf '%s' "$kak_selection" | tmux load-buffer -b "$buf" - 2>&1)
         if [ $? -ne 0 ]; then
-            err=$(printf '%s' "$err" | tr '\r\n' '  ' | sed "s/'/''/g" | head -c 200)
-            echo "fail 'load-buffer failed: ${err}'"
+            _ksb_fail "load-buffer failed" "$err"
             exit 0
         fi
         err=$(tmux paste-buffer -b "$buf" -t "$pane" -p 2>&1)
         if [ $? -ne 0 ]; then
-            err=$(printf '%s' "$err" | tr '\r\n' '  ' | sed "s/'/''/g" | head -c 200)
-            echo "fail 'paste-buffer failed: ${err}'"
+            _ksb_fail "paste-buffer failed" "$err"
             exit 0
         fi
     }
@@ -116,11 +115,11 @@ define-command -hidden kakoune-scrollback-send-to-tmux %{
 
 define-command -hidden kakoune-scrollback-execute-in-tmux %{
     evaluate-commands %sh{
+        _ksb_fail() { printf "fail '%s: %s'\n" "$1" "$(printf '%s' "$2" | tr '\r\n' '  ' | head -c 200 | sed "s/'/''/g")"; }
         pane="$kak_opt_scrollback_tmux_pane_id"
         err=$(tmux send-keys -t "$pane" Enter 2>&1)
         if [ $? -ne 0 ]; then
-            err=$(printf '%s' "$err" | tr '\r\n' '  ' | sed "s/'/''/g" | head -c 200)
-            echo "fail 'send-keys failed: ${err}'"
+            _ksb_fail "send-keys failed" "$err"
         fi
     }
 }
@@ -257,10 +256,10 @@ define-command kakoune-scrollback-generate-tmux-conf %{
     edit -scratch *tmux-conf*
     execute-keys '%d'
     evaluate-commands %sh{
+        _ksb_fail() { printf "fail '%s: %s'\n" "$1" "$(printf '%s' "$2" | tr '\r\n' '  ' | head -c 200 | sed "s/'/''/g")"; }
         conf=$(kakoune-scrollback --generate-tmux-conf 2>&1)
         if [ $? -ne 0 ]; then
-            err=$(printf '%s' "$conf" | tr '\r\n' '  ' | sed "s/'/''/g" | head -c 200)
-            echo "fail 'failed to generate tmux conf: ${err}'"
+            _ksb_fail "failed to generate tmux conf" "$conf"
         else
             printf "set-register '\"' '%s'\n" "$(printf '%s' "$conf" | sed "s/'/''/g")"
         fi

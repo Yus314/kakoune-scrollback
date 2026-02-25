@@ -700,6 +700,50 @@ assert_file_eq "generate-tmux-conf populates buffer" "$RESULT2" "FOUND"
 
 export PATH="$SAVED_PATH2"
 
+# 15. Error sanitization
+echo ""
+echo "Error sanitization:"
+
+# Single quote in backend name is escaped properly (no kak syntax error)
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    set-option global scrollback_backend \"it's\"
+    try %{
+        kakoune-scrollback-require-backend
+    } catch %{
+        nop %sh{ printf CAUGHT > '$RESULT' }
+    }
+    quit!
+" || true
+assert_file_eq "single quote in backend name is sanitized" "$RESULT" "CAUGHT"
+
+# Newline in error output is sanitized (no kak syntax error)
+SANITIZE_STUB_DIR="$TMPDIR_TEST/sanitize_stub_bin"
+mkdir -p "$SANITIZE_STUB_DIR"
+
+cat > "$SANITIZE_STUB_DIR/kakoune-scrollback" << 'STUB'
+#!/bin/sh
+printf 'line1\nline2\nline3' >&2
+exit 1
+STUB
+chmod +x "$SANITIZE_STUB_DIR/kakoune-scrollback"
+
+SAVED_PATH3="$PATH"
+export PATH="$SANITIZE_STUB_DIR:$PATH"
+
+> "$RESULT"
+run_kak "
+    source '$PLUGIN'
+    try %{ kakoune-scrollback-generate-tmux-conf } catch %{
+        nop %sh{ printf CAUGHT > '$RESULT' }
+    }
+    quit!
+" || true
+assert_file_eq "newline in error output is sanitized" "$RESULT" "CAUGHT"
+
+export PATH="$SAVED_PATH3"
+
 # --- Summary ---
 
 echo ""
